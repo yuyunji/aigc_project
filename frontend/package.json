@@ -1,0 +1,22 @@
+{
+  "name": "aigc-workbench-frontend",
+  "version": "0.1.0",
+  "private": true,
+  "description": "AIGC短剧工作台前端 - 个人求职Demo项目",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "vue": "^3.5.13",
+    "vue-router": "^4.5.0",
+    "axios": "^1.7.9",
+    "element-plus": "^2.9.2"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-vue": "^5.2.1",
+    "sass": "^1.83.4",
+    "vite": "^6.0.7"
+  }
+}

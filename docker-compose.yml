@@ -1,0 +1,42 @@
+# ================================================================
+# Docker Compose — 一键启动 AIGC 短剧工作台
+# 用法: docker compose up -d
+# ================================================================
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: aigc-workbench
+    ports:
+      - "8000:8000"
+    environment:
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+      - ANTHROPIC_MODEL=${ANTHROPIC_MODEL:-claude-sonnet-5-20250915}
+      - LLM_MAX_RETRIES=${LLM_MAX_RETRIES:-2}
+      - LLM_CALL_TIMEOUT=${LLM_CALL_TIMEOUT:-120}
+      - TASK_TOTAL_TIMEOUT=${TASK_TOTAL_TIMEOUT:-600}
+      - MAX_INPUT_CHARS=${MAX_INPUT_CHARS:-200000}
+    volumes:
+      # 持久化 SQLite 数据库（容器重启不丢失）
+      - ./data:/app/data
+      # 持久化上传文件
+      - ./uploads:/app/uploads
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/api/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # 可选：前端开发模式（不需要构建）
+  # dev-frontend:
+  #   image: node:20-alpine
+  #   working_dir: /frontend
+  #   command: sh -c "npm install && npm run dev -- --host 0.0.0.0"
+  #   ports:
+  #     - "5173:5173"
+  #   volumes:
+  #     - ./frontend:/frontend
+  #   depends_on:
+  #     - app
