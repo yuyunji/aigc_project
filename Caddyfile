@@ -1,7 +1,7 @@
 # Caddy 反代配置 — 自动 HTTPS (Let's Encrypt)
 # 把 your-domain.com 替换为你的真实域名
 
-your-domain.com {
+dwrider.top {
     reverse_proxy app:8000
 
     # 访问日志（排查问题用）
