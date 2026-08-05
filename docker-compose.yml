@@ -8,8 +8,9 @@ services:
       context: .
       dockerfile: Dockerfile
     container_name: aigc-workbench
-    ports:
-      - "8000:8000"
+    # 不对外暴露端口，仅 caddy 内部访问
+    expose:
+      - "8000"
     environment:
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
       - ANTHROPIC_MODEL=${ANTHROPIC_MODEL:-claude-sonnet-5-20250915}
@@ -18,9 +19,7 @@ services:
       - TASK_TOTAL_TIMEOUT=${TASK_TOTAL_TIMEOUT:-600}
       - MAX_INPUT_CHARS=${MAX_INPUT_CHARS:-200000}
     volumes:
-      # 持久化 SQLite 数据库（容器重启不丢失）
       - ./data:/app/data
-      # 持久化上传文件
       - ./uploads:/app/uploads
     restart: unless-stopped
     healthcheck:
@@ -28,6 +27,24 @@ services:
       interval: 30s
       timeout: 10s
       retries: 3
+
+  caddy:
+    image: caddy:2-alpine
+    container_name: aigc-caddy
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data          # 持久化 SSL 证书
+      - caddy_config:/config      # 持久化 Caddy 配置
+    restart: unless-stopped
+    depends_on:
+      - app
+
+volumes:
+  caddy_data:
+  caddy_config:
 
   # 可选：前端开发模式（不需要构建）
   # dev-frontend:

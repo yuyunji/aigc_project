@@ -1,0 +1,16 @@
+# Caddy 反代配置 — 自动 HTTPS (Let's Encrypt)
+# 把 your-domain.com 替换为你的真实域名
+
+your-domain.com {
+    reverse_proxy app:8000
+
+    # 访问日志（排查问题用）
+    log {
+        output file /var/log/caddy/access.log
+    }
+
+    # 限制上传大小（默认 100MB，如需改大调整下面数值）
+    request_body {
+        max_size 50MB
+    }
+}
