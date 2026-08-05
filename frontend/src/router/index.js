@@ -29,6 +29,12 @@ const routes = [
     component: () => import("../views/DashboardView.vue"),
     meta: { title: "统计看板" },
   },
+  {
+    path: "/media",
+    name: "Media",
+    component: () => import("../views/MediaView.vue"),
+    meta: { title: "媒体预览" },
+  },
 ];
 
 const router = createRouter({

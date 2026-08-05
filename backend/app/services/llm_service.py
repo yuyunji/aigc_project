@@ -33,11 +33,31 @@ CHARACTER_SYSTEM_PROMPT = """你是一位专业的影视角色设计师。根据
 
 STORYBOARD_SYSTEM_PROMPT = """你是一位专业的影视分镜师。根据剧本大纲和人物设定，生成详细的分镜脚本。
 
-要求：
-1. 按场景/镜头拆分，每个分镜包含：场景描述、人物动作、对话方向、运镜建议
-2. 每个分镜以 "## 分镜N：分镜标题" 开头
-3. 分镜之间保持叙事连贯性
-4. 输出为 Markdown 格式"""
+你必须输出严格 JSON 数组格式，不要输出任何其他内容：
+
+```json
+[
+  {
+    "scene_number": 1,
+    "scene_title": "分镜标题（10字以内）",
+    "location": "场景地点",
+    "time_of_day": "白天/夜晚/黄昏/清晨",
+    "characters_in_scene": ["角色名1", "角色名2"],
+    "camera_movement": "运镜方式（如：中景推近特写、全景横摇、跟拍等）",
+    "dialogue": "角色A：台词内容\\n角色B：台词内容",
+    "visual_description": "画面描述：场景细节、人物动作、光线氛围、色彩基调",
+    "duration_seconds": 5.0
+  }
+]
+```
+
+规则：
+1. 输出 5-12 个分镜，覆盖大纲的核心情节
+2. visual_description 要详尽，可用于 AI 图片生成（描述场景、光线、色彩、构图）
+3. dialogue 保留原著核心台词，标注说话角色
+4. camera_movement 使用专业术语
+5. duration_seconds 建议 3-8 秒/分镜
+6. 仅输出 JSON 数组，不要有任何解释或 markdown 标记"""
 
 # ---------------------------------------------------------------------------
 # Token 估算常量（粗略：中文约 1.5 字符/token，英文约 4 字符/token）
@@ -263,14 +283,14 @@ class LLMService:
 
     async def generate_storyboard(self, outline: str, characters: str) -> str:
         """
-        阶段3：根据大纲和人物设定生成分镜脚本。
+        阶段3：根据大纲和人物设定生成 JSON 结构化分镜脚本。
 
         Args:
             outline:    阶段1 生成的大纲
             characters: 阶段2 生成的人物设定（自动截断控制 token）
 
         Returns:
-            Markdown 格式的分镜脚本
+            JSON 字符串 {"storyboards": [{...}, ...]}
         """
         # 智能截断 characters
         estimated = self._estimate_tokens(outline)
@@ -281,13 +301,24 @@ class LLMService:
         if len(characters) > allowed:
             characters_excerpt += "\n\n（角色设定内容较长，已截取前段）"
 
+        # 超长原文：先把 outline 再压缩一版摘要给 storyboard 用
+        outline_excerpt = outline
+        if len(outline) > 4000:
+            outline_excerpt = outline[:4000] + "\n\n（大纲较长，已截取前4000字）"
+            logger.info("大纲过长，已截断至 4000 字符用于分镜生成")
+
         user_message = (
-            f"## 剧本大纲\n{outline}\n\n"
+            f"## 剧本大纲\n{outline_excerpt}\n\n"
             f"## 人物角色设定\n{characters_excerpt}\n\n"
-            f"请根据以上大纲和人物设定，生成详细的分镜脚本。"
+            f"请根据以上大纲和人物设定，生成 JSON 格式的分镜脚本数组。"
         )
 
-        return await self._call_claude(STORYBOARD_SYSTEM_PROMPT, user_message, max_tokens=4096)
+        return await self._call_claude(
+            STORYBOARD_SYSTEM_PROMPT,
+            user_message,
+            max_tokens=8192,
+            temperature=0.6,
+        )
 
 
 # 全局单例

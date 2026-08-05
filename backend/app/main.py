@@ -3,13 +3,15 @@ FastAPI 应用入口
 挂载路由、配置 CORS、注册异常处理、管理生命周期事件
 """
 import logging
+import os
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 
 from app.database import init_db
-from app.routers import upload, task, result
+from app.routers import upload, task, result, media
 from app.services.task_queue import task_queue
 from app.utils.exceptions import register_exception_handlers
 
@@ -74,6 +76,7 @@ app.add_middleware(
 app.include_router(upload.router, prefix="/api")
 app.include_router(task.router, prefix="/api")
 app.include_router(result.router, prefix="/api")
+app.include_router(media.router, prefix="/api")
 
 # 注册全局异常 handler
 register_exception_handlers(app)
@@ -83,3 +86,12 @@ register_exception_handlers(app)
 async def health_check():
     """健康检查接口"""
     return {"status": "ok", "service": "AIGC短剧工作台"}
+
+
+# 静态文件服务（前端构建产物 + 媒体文件）—— 放在最后，避免拦截 API 路由
+media_dir = os.path.abspath(settings.media_dir)
+os.makedirs("static", exist_ok=True)
+os.makedirs(media_dir, exist_ok=True)
+if os.path.isdir("static") and os.listdir("static"):
+    app.mount("/", StaticFiles(directory="static", html=True), name="static")
+app.mount("/media", StaticFiles(directory=media_dir), name="media")

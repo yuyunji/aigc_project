@@ -97,17 +97,10 @@
             </el-tag>
           </div>
         </template>
-        <div v-loading="storyboardsLoading" class="card-body">
-          <el-empty v-if="!storyboardsLoading && storyboards.length === 0" description="分镜脚本尚未生成" />
-          <div v-else class="storyboard-timeline">
-            <div v-for="scene in storyboards" :key="scene.id" class="timeline-item">
-              <div class="timeline-marker">
-                <span>{{ scene.scene_number }}</span>
-              </div>
-              <div class="markdown-body" v-html="renderMarkdown(scene.description)" />
-            </div>
-          </div>
-        </div>
+        <StoryboardCard
+          :scenes="storyboards"
+          :loading="storyboardsLoading"
+        />
       </el-card>
     </div>
   </div>
@@ -118,6 +111,7 @@ import { ref, onMounted } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { getTaskList, getOutline, getCharacters, getStoryboards } from "../api/task";
 import { renderMarkdown } from "../utils/markdown";
+import StoryboardCard from "../components/StoryboardCard.vue";
 
 const route = useRoute();
 const router = useRouter();

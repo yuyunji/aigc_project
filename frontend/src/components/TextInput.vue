@@ -51,6 +51,7 @@ const charCount = computed(() => (props.modelValue || "").length);
 
 <style lang="scss" scoped>
 .text-input {
+  width: 100%;
   &__footer {
     margin-top: 6px;
     display: flex;

@@ -44,6 +44,7 @@
               :loading="submitting"
               :disabled="!canSubmit"
               class="submit-btn"
+              @click="handleSubmit"
             >
               <span v-if="!submitting">🚀 提交生成任务</span>
               <span v-else>正在创建...</span>
@@ -114,6 +115,7 @@ const router = useRouter();
 const taskName = ref("");
 const sourceText = ref("");
 const submitting = ref(false);
+const isFromFile = ref(false);
 
 const canSubmit = computed(
   () => taskName.value.trim().length > 0 && sourceText.value.trim().length >= 10
@@ -122,9 +124,13 @@ const canSubmit = computed(
 function onFileLoaded(content, filename) {
   if (content) {
     sourceText.value = content;
+    isFromFile.value = true;
     if (!taskName.value) {
       taskName.value = filename.replace(/\.txt$/i, "") + " · 改编";
     }
+  } else {
+    // 用户移除了上传的文件
+    isFromFile.value = false;
   }
 }
 
@@ -135,7 +141,7 @@ async function handleSubmit() {
     const res = await createTask({
       title: taskName.value.trim(),
       content: sourceText.value.trim(),
-      source_type: "text",
+      source_type: isFromFile.value ? "file" : "text",
     });
     ElMessage.success({
       message: `"${res.data.title}" 创建成功，已开始处理`,
@@ -152,6 +158,7 @@ async function handleSubmit() {
 function handleClear() {
   taskName.value = "";
   sourceText.value = "";
+  isFromFile.value = false;
 }
 </script>
 

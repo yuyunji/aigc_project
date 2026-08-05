@@ -22,6 +22,9 @@
         <router-link to="/dashboard" active-class="nav-active">
           <span class="nav-icon">📊</span>看板
         </router-link>
+        <router-link to="/media" active-class="nav-active">
+          <span class="nav-icon">🎬</span>媒体
+        </router-link>
       </nav>
     </header>
 
