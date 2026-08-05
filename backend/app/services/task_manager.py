@@ -381,37 +381,57 @@ class TaskManager:
 
         image_paths = []
         total = len(scene_list)
+        MAX_RETRIES = 1  # 每个分镜最多重试 1 次
 
         for i, scene in enumerate(scene_list):
             scene_num = scene["scene_number"]
-            # 优先使用 visual_description 或 image_prompt 生成图片
             visual = scene.get("visual_description", "") or scene.get("description", "")
             prebuilt = scene.get("image_prompt", "")
             progress = 78 + int((i / max(total, 1)) * 10)
 
             # 构建 image prompt：优先用 LLM 生成的英文 prompt
-            if prebuilt:
+            if prebuilt and prebuilt.strip():
                 prompt = prebuilt
+            elif visual and visual.strip():
+                try:
+                    prompt = await asyncio.wait_for(
+                        prompt_builder.build_image_prompt(visual),
+                        timeout=30,
+                    )
+                except (asyncio.TimeoutError, Exception):
+                    # prompt 构建失败时用中文 visual 做兜底
+                    prompt = visual[:500]
             else:
-                prompt = await prompt_builder.build_image_prompt(visual)
+                prompt = "cinematic scene, dramatic lighting, 4K, high quality"
 
-            # 保存 media asset
-            asset = self._create_media_asset(
-                task_id, "image", scene_num, prompt
-            )
-
-            try:
-                path = await wanx_service.generate_image(
-                    task_id, scene_num, prompt
+            # 重试循环
+            for retry in range(MAX_RETRIES + 1):
+                asset = self._create_media_asset(
+                    task_id, "image", scene_num, prompt
                 )
-                image_paths.append(path)
-                self._update_media_asset(asset.id, "success", file_path=path)
-            except Exception as e:
-                logger.warning(f"[{task_id}] 分镜{scene_num} 图片生成失败: {e}")
-                self._update_media_asset(
-                    asset.id, "failed", error=str(e)[:500]
-                )
-                # 图片生成失败不阻断后续阶段，用占位继续
+                try:
+                    path = await asyncio.wait_for(
+                        wanx_service.generate_image(task_id, scene_num, prompt),
+                        timeout=180,
+                    )
+                    image_paths.append(path)
+                    self._update_media_asset(asset.id, "success", file_path=path)
+                    logger.info(f"[{task_id}] 分镜{scene_num} 图片生成成功")
+                    break
+                except asyncio.TimeoutError:
+                    logger.warning(
+                        f"[{task_id}] 分镜{scene_num} 图片生成超时"
+                        + (f" (重试 {retry+1}/{MAX_RETRIES})" if retry < MAX_RETRIES else "")
+                    )
+                    self._update_media_asset(asset.id, "failed", error="生成超时")
+                except Exception as e:
+                    logger.warning(
+                        f"[{task_id}] 分镜{scene_num} 图片生成失败: {e}"
+                        + (f" (重试 {retry+1}/{MAX_RETRIES})" if retry < MAX_RETRIES else "")
+                    )
+                    self._update_media_asset(asset.id, "failed", error=str(e)[:500])
+                    if retry >= MAX_RETRIES:
+                        break
 
             self._update_status(task_id, "running", progress=progress)
 
@@ -734,23 +754,58 @@ class TaskManager:
 
     @staticmethod
     def _save_storyboards(task_id: str, scene_list: list[dict]) -> None:
-        """逐条存入结构化分镜"""
+        """逐条存入结构化分镜，description 存储人类可读短文"""
         db = SessionLocal()
         try:
             for scene_data in scene_list:
+                # 构建人类可读的 description 文本（不再存 JSON 代码）
+                desc_parts = []
+                title = scene_data.get("scene_title", "")
+                location = scene_data.get("location", "")
+                time_of_day = scene_data.get("time_of_day", "")
+                camera = scene_data.get("camera_movement", "")
+                chars = scene_data.get("characters_in_scene", "")
+                visual = scene_data.get("visual_description", "")
+                dialogue = scene_data.get("dialogue", "")
+
+                # 标题 + 场景信息
+                header = f"## {title}" if title else f"## 分镜{scene_data['scene_number']}"
+                if location or time_of_day:
+                    loc_info = f"{location} · {time_of_day}" if location and time_of_day else (location or time_of_day)
+                    header += f"\n*{loc_info}*"
+                desc_parts.append(header)
+
+                # 出场角色
+                if chars:
+                    desc_parts.append(f"\n**出场角色**：{chars}")
+
+                # 画面描述（核心内容）
+                if visual:
+                    desc_parts.append(f"\n{visual}")
+
+                # 台词
+                if dialogue:
+                    desc_parts.append(f"\n> {dialogue.replace(chr(10), chr(10) + '> ')}")
+
+                # 运镜
+                if camera:
+                    desc_parts.append(f"\n🎥 运镜：{camera}")
+
+                readable_desc = "\n".join(desc_parts)
+
                 storyboard = Storyboard(
                     task_id=task_id,
                     scene_number=scene_data["scene_number"],
-                    scene_title=scene_data.get("scene_title", ""),
-                    location=scene_data.get("location", ""),
-                    time_of_day=scene_data.get("time_of_day", ""),
-                    characters_in_scene=scene_data.get("characters_in_scene", ""),
-                    camera_movement=scene_data.get("camera_movement", ""),
-                    dialogue=scene_data.get("dialogue", ""),
-                    visual_description=scene_data.get("visual_description", ""),
+                    scene_title=title,
+                    location=location,
+                    time_of_day=time_of_day,
+                    characters_in_scene=chars,
+                    camera_movement=camera,
+                    dialogue=dialogue,
+                    visual_description=visual,
                     image_prompt=scene_data.get("image_prompt", ""),
                     duration_seconds=scene_data.get("duration_seconds", 5.0),
-                    description=scene_data.get("description", ""),
+                    description=readable_desc,
                 )
                 db.add(storyboard)
             db.commit()

@@ -1,24 +1,91 @@
 """
 媒体资源接口
-GET  /api/media/{task_id}/pipeline  — 全流程进度
-GET  /api/media/{task_id}/images    — 分镜图片列表
-GET  /api/media/{task_id}/videos    — 视频片段列表
-GET  /api/media/{task_id}/audio     — 配音列表
-GET  /api/media/{task_id}/composite — 合成视频
+POST /api/media/{task_id}/generate    — 触发图片生成（Stage 5）
+GET  /api/media/{task_id}/pipeline    — 全流程进度
+GET  /api/media/{task_id}/images      — 分镜图片列表
+GET  /api/media/{task_id}/videos      — 视频片段列表
+GET  /api/media/{task_id}/audio       — 配音列表
+GET  /api/media/{task_id}/composite   — 合成视频
 """
-from fastapi import APIRouter, Depends, HTTPException
+import asyncio
+import logging
+from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
 from sqlalchemy.orm import Session
 
-from app.database import get_db
+from app.database import SessionLocal, get_db
 from app.models.task import Task
+from app.models.storyboard import Storyboard
 from app.models.media import MediaAsset
 from app.schemas.media import (
     MediaAssetResponse,
     MediaAssetListResponse,
     PipelineProgressResponse,
 )
+from app.services.task_manager import task_manager
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/media", tags=["媒体资源"])
+
+
+@router.post("/{task_id}/generate")
+async def trigger_media_generation(task_id: str):
+    """
+    为已有任务触发分镜图片生成（Stage 5）。
+    异步执行，立即返回。
+    """
+    db = SessionLocal()
+    try:
+        task = db.query(Task).filter(Task.id == task_id).first()
+        if not task:
+            raise HTTPException(status_code=404, detail=f"任务 {task_id} 不存在")
+        if task.status != "success" or task.progress < 78:
+            raise HTTPException(
+                status_code=400,
+                detail=f"任务未完成分镜生成阶段（status={task.status}, progress={task.progress}%）",
+            )
+
+        storyboards = (
+            db.query(Storyboard)
+            .filter(Storyboard.task_id == task_id)
+            .order_by(Storyboard.scene_number.asc())
+            .all()
+        )
+        if not storyboards:
+            raise HTTPException(status_code=400, detail="该任务无分镜数据")
+    finally:
+        db.close()
+
+    scene_list = [
+        {
+            "scene_number": s.scene_number,
+            "scene_title": s.scene_title or "",
+            "location": s.location or "",
+            "time_of_day": s.time_of_day or "",
+            "characters_in_scene": s.characters_in_scene or "",
+            "camera_movement": s.camera_movement or "",
+            "dialogue": s.dialogue or "",
+            "visual_description": s.visual_description or s.description or "",
+            "image_prompt": s.image_prompt or "",
+            "duration_seconds": s.duration_seconds or 5.0,
+            "description": s.description or "",
+        }
+        for s in storyboards
+    ]
+
+    # 异步执行图片生成
+    asyncio.create_task(_run_generation(task_id, scene_list))
+
+    return {"status": "started", "task_id": task_id, "scene_count": len(scene_list)}
+
+
+async def _run_generation(task_id: str, scene_list: list[dict]):
+    """后台执行图片生成"""
+    try:
+        await task_manager._run_image_generation(task_id, scene_list)
+        logger.info(f"[{task_id}] 图片生成完成")
+    except Exception as e:
+        logger.exception(f"[{task_id}] 图片生成失败: {e}")
 
 
 def _get_task_or_404(task_id: str, db: Session) -> Task:

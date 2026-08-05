@@ -2,7 +2,7 @@
 SQLite 数据库连接 & 建表
 使用 SQLAlchemy ORM，本地文件数据库，无需额外服务
 """
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, text
 from sqlalchemy.orm import sessionmaker, DeclarativeBase
 
 from app.config import settings
@@ -55,15 +55,17 @@ def _migrate_storyboard_columns():
     }
     with engine.connect() as conn:
         # 获取已有列名
-        existing = {row[1] for row in conn.execute("PRAGMA table_info(storyboards)")}
+        existing = {
+            row[1] for row in conn.execute(text("PRAGMA table_info(storyboards)"))
+        }
         for col_name, col_type in new_columns.items():
             if col_name not in existing:
                 try:
                     conn.execute(
-                        f"ALTER TABLE storyboards ADD COLUMN {col_name} {col_type}"
+                        text(f"ALTER TABLE storyboards ADD COLUMN {col_name} {col_type}")
                     )
                 except Exception:
-                    pass  # 已存在或数据库引擎不支持
+                    pass  # 列已存在或其他错误，跳过
         conn.commit()
 
 

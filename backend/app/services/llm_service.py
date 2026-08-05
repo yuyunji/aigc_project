@@ -148,7 +148,7 @@ class LLMService:
                     f" | model={self.model} | max_tokens={max_tokens}"
                 )
 
-                # 带超时的 API 调用
+                # 带超时的 API 调用（禁用 extended thinking，确保返回纯文本）
                 response = await asyncio.wait_for(
                     self.client.messages.create(
                         model=self.model,
@@ -156,16 +156,24 @@ class LLMService:
                         temperature=temperature,
                         system=system_prompt,
                         messages=[{"role": "user", "content": user_message}],
+                        thinking={"type": "disabled"},
                     ),
                     timeout=call_timeout,
                 )
 
-                # 提取文本内容
+                # 提取文本内容（优先 text block，兜底 thinking block）
                 text_blocks = [
                     block.text
                     for block in response.content
                     if hasattr(block, "text") and block.text
                 ]
+                if not text_blocks:
+                    # 兜底：从 thinking block 中提取内容
+                    for block in response.content:
+                        if hasattr(block, "thinking") and block.thinking:
+                            text_blocks.append(f"[思考] {block.thinking}")
+                        elif hasattr(block, "signature") and block.signature:
+                            text_blocks.append(f"[签名] {block.signature[:100]}")
                 result = "\n".join(text_blocks)
                 logger.info(f"Claude API 调用成功 (attempt {attempt + 1}) | 返回 {len(result)} 字符")
                 return result
