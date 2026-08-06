@@ -29,7 +29,7 @@
 
           <!-- 生成图片 -->
           <div v-if="getSceneImage(scene.scene_number)" class="scene-image">
-            <img :src="getMediaUrl(getSceneImage(scene.scene_number).file_path)" :alt="scene.scene_title" />
+            <img :src="getMediaUrl(getSceneImage(scene.scene_number).file_path) + '?v=' + getSceneImage(scene.scene_number).id" :alt="scene.scene_title" />
           </div>
 
           <div v-if="scene.characters_in_scene" class="scene-characters">

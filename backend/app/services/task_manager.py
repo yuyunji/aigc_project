@@ -508,8 +508,8 @@ class TaskManager:
             prompt = "cinematic scene, dramatic lighting, 4K, high quality"
 
         # 全局风格前缀
-        if settings.ark_image_style:
-            prompt = f"{settings.ark_image_style}. {prompt}"
+        if settings.image_style:
+            prompt = f"{settings.image_style}. {prompt}"
 
         # 注入出场角色外貌特征，确保跨分镜角色一致性
         char_appearance = self._get_characters_appearance(
@@ -533,9 +533,9 @@ class TaskManager:
         self._cleanup_asset(task_id, scene_num, "image")
         asset = self._create_media_asset(task_id, "image", scene_num, prompt)
         try:
-            from app.services.seedream_service import seedream_service
+            from app.services.glm_image_service import glm_image_service
             path = await asyncio.wait_for(
-                seedream_service.generate_image(task_id, scene_num, prompt, ref_image_path),
+                glm_image_service.generate_image(task_id, scene_num, prompt, ref_image_path),
                 timeout=180,
             )
             self._update_media_asset(asset.id, "success", file_path=path)
@@ -675,7 +675,7 @@ class TaskManager:
         确保角色有定妆参考图。已存在则直接返回路径，否则调用 Seedream 生成。
         参考图保存在 media/{task_id}/characters/ 下。
         """
-        from app.services.seedream_service import seedream_service
+        from app.services.glm_image_service import glm_image_service
         import os
 
         ref_dir = os.path.join(settings.media_dir, task_id, "characters")
@@ -702,12 +702,12 @@ class TaskManager:
             return None
 
         try:
-            ref_url = await seedream_service._generate(
-                task_id,
-                f"{settings.ark_image_style or ''}. "
+            ref_prompt = (
+                f"{settings.image_style or ''}. "
                 f"Character reference portrait of {char_name}: {appearance_text}. "
-                "Front view, half-body, clean background, full outfit, clear face",
+                "Front view, half-body, clean background, full outfit, clear face"
             )
+            ref_url = await glm_image_service._generate(ref_prompt)
             # 下载参考图
             async with httpx.AsyncClient(timeout=60) as client:
                 resp = await client.get(ref_url)
