@@ -80,7 +80,17 @@
             <div class="pipeline-arrow">↓</div>
             <div class="pipeline-step">
               <span class="step-dot"></span>
-              <span>生成分镜脚本</span>
+              <span>生成分镜脚本 JSON</span>
+            </div>
+            <div class="pipeline-arrow">↓</div>
+            <div class="pipeline-step highlight-step">
+              <span class="step-dot highlight-dot"></span>
+              <span>MiniMax-H3 文生视频</span>
+            </div>
+            <div class="pipeline-arrow">↓</div>
+            <div class="pipeline-step">
+              <span class="step-dot"></span>
+              <span>FFmpeg 视频拼接</span>
             </div>
           </div>
         </el-card>
@@ -251,6 +261,17 @@ function handleClear() {
   background: var(--color-primary);
   flex-shrink: 0;
   box-shadow: 0 0 6px rgba(99, 102, 241, 0.4);
+}
+
+.highlight-step {
+  background: var(--color-primary-bg);
+  border-radius: var(--radius-sm);
+  padding: 6px 10px;
+}
+
+.highlight-dot {
+  background: var(--color-success) !important;
+  box-shadow: 0 0 8px rgba(34, 197, 94, 0.5) !important;
 }
 
 .pipeline-arrow {

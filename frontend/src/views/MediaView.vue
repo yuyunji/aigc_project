@@ -1,18 +1,19 @@
 <!--
-  媒体预览页 — 全流程进度 + 图片/视频/配音/合成一站预览
+  媒体预览页 — MiniMax-H3 视频生成流程
+  管线进度 + 分镜视频片段 + 最终合成
 -->
 <template>
   <div class="media-page">
     <div class="page-hero">
-      <h1 class="page-title">🎬 媒体预览</h1>
-      <p class="page-desc">查看 AI 生成的图片、视频、配音及最终合成结果</p>
+      <h1 class="page-title">🎬 视频生成</h1>
+      <p class="page-desc">MiniMax-H3 文生视频：分镜→视频（含音频）→ FFmpeg 拼接</p>
     </div>
 
     <!-- 任务选择 -->
     <div class="media-toolbar">
       <el-select
         v-model="selectedTaskId"
-        placeholder="请选择已完成的任务..."
+        placeholder="请选择已完成分镜的任务..."
         @change="onTaskSelect"
         clearable
         size="large"
@@ -20,77 +21,62 @@
         style="width: 400px"
       >
         <el-option
-          v-for="t in successTasks"
+          v-for="t in eligibleTasks"
           :key="t.id"
           :label="t.title"
           :value="t.id"
         />
       </el-select>
+
+      <el-button
+        v-if="selectedTaskId"
+        type="primary"
+        style="margin-left:12px"
+        @click="triggerGeneration"
+        :loading="triggering"
+      >
+        🎥 生成视频
+      </el-button>
     </div>
 
-    <el-empty v-if="!selectedTaskId" description="请选择任务查看媒体资源" />
+    <el-empty v-if="!selectedTaskId" description="请选择任务" />
 
     <div v-else>
       <!-- 流程进度 -->
       <el-card shadow="never" class="section-card">
         <template #header><span class="section-title">📊 生成进度</span></template>
-        <MediaPipeline
-          :stages="pipeline?.stages || []"
-          :loading="pipelineLoading"
-        />
+        <MediaPipeline :stages="pipeline?.stages || []" :loading="pipelineLoading" />
       </el-card>
 
-      <!-- 分镜图片 -->
+      <!-- 视频片段 (MiniMax-H3) -->
       <el-card shadow="never" class="section-card">
         <template #header>
-          <span class="section-title">🖼️ 分镜图片</span>
-          <el-tag v-if="images.length" size="small" effect="plain" style="margin-left:8px">
-            {{ images.length }} 张
-          </el-tag>
-        </template>
-        <ImageGallery :images="images" :loading="imagesLoading" />
-      </el-card>
-
-      <!-- 图生视频 -->
-      <el-card shadow="never" class="section-card">
-        <template #header>
-          <span class="section-title">🎥 视频片段</span>
+          <span class="section-title">🎥 分镜视频片段</span>
           <el-tag v-if="videos.length" size="small" effect="plain" style="margin-left:8px">
-            {{ videos.length }} 段
+            {{ videos.filter(v=>v.status==='success').length }}/{{ videos.length }}
           </el-tag>
         </template>
-        <div v-if="videos.length" class="video-grid">
+        <div v-if="videos.length" v-loading="videosLoading" class="video-grid">
           <VideoPlayer
             v-for="v in videos"
             :key="v.id"
             :src="getMediaUrl(v.file_path)"
-            :title="`分镜 ${v.scene_number}`"
-            :loading="videosLoading"
+            :title="`分镜 ${v.scene_number} ` + (v.status === 'success' ? '✅' : v.status === 'failed' ? '❌' : '⏳')"
+            :loading="false"
           />
         </div>
-        <el-empty v-else-if="!videosLoading" description="视频尚未生成" />
-      </el-card>
-
-      <!-- 角色配音 -->
-      <el-card shadow="never" class="section-card">
-        <template #header>
-          <span class="section-title">🎙️ 角色配音</span>
-          <el-tag v-if="audios.length" size="small" effect="plain" style="margin-left:8px">
-            {{ audios.length }} 段
-          </el-tag>
-        </template>
-        <AudioPlayer :audios="audios" :loading="audiosLoading" />
+        <el-empty v-else-if="!videosLoading" description="视频尚未生成，点击「生成视频」按钮" />
       </el-card>
 
       <!-- 最终合成 -->
-      <el-card shadow="never" class="section-card" v-if="composite">
+      <el-card shadow="never" class="section-card" v-if="composite && composite.status === 'success'">
         <template #header>
           <span class="section-title">🎬 最终合成视频</span>
           <el-tag type="success" size="small" effect="plain" style="margin-left:8px">已完成</el-tag>
         </template>
         <VideoPlayer
           :src="getMediaUrl(composite.file_path)"
-          title="最终合成"
+          title="完整短剧 · MiniMax-H3"
           :loading="compositeLoading"
         />
       </el-card>
@@ -101,41 +87,32 @@
 <script setup>
 import { ref, onMounted } from "vue";
 import { useRoute, useRouter } from "vue-router";
-import ImageGallery from "../components/ImageGallery.vue";
+import { ElMessage } from "element-plus";
 import VideoPlayer from "../components/VideoPlayer.vue";
-import AudioPlayer from "../components/AudioPlayer.vue";
 import MediaPipeline from "../components/MediaPipeline.vue";
 import { getTaskList } from "../api/task";
-import {
-  getPipelineProgress,
-  getImages,
-  getVideos,
-  getAudio,
-  getComposite,
-} from "../api/media";
+import { getPipelineProgress, getVideos, getComposite } from "../api/media";
+import apiClient from "../api/index";
 
 const route = useRoute();
 const router = useRouter();
 
 const selectedTaskId = ref("");
-const successTasks = ref([]);
+const eligibleTasks = ref([]);
 const tasksLoading = ref(false);
+const triggering = ref(false);
 const pipeline = ref(null);
 const pipelineLoading = ref(false);
-const images = ref([]);
-const imagesLoading = ref(false);
 const videos = ref([]);
 const videosLoading = ref(false);
-const audios = ref([]);
-const audiosLoading = ref(false);
 const composite = ref(null);
 const compositeLoading = ref(false);
 
-async function loadSuccessTasks() {
+async function loadEligibleTasks() {
   tasksLoading.value = true;
   try {
     const res = await getTaskList();
-    successTasks.value = (res.data.tasks || []).filter(
+    eligibleTasks.value = (res.data.tasks || []).filter(
       (t) => t.status === "success" || t.progress >= 78
     );
     const queryId = route.query.taskId;
@@ -153,12 +130,28 @@ async function onTaskSelect(taskId) {
   await loadAll(taskId);
 }
 
+async function triggerGeneration() {
+  if (!selectedTaskId.value) return;
+  triggering.value = true;
+  try {
+    await apiClient.post(`/api/media/${selectedTaskId.value}/generate`);
+    ElMessage.success("视频生成已启动，请等待...");
+    // 轮询进度
+    let polls = 0;
+    const poller = setInterval(async () => {
+      await loadAll(selectedTaskId.value);
+      polls++;
+      const vids = videos.value.filter((v) => v.status === "success");
+      if (vids.length > 0 || polls > 60) clearInterval(poller);
+    }, 5000);
+  } catch (e) { /* global handler */ }
+  finally { triggering.value = false; }
+}
+
 async function loadAll(taskId) {
   await Promise.allSettled([
     (async () => { pipelineLoading.value = true; try { const r = await getPipelineProgress(taskId); pipeline.value = r.data; } catch(e){} finally { pipelineLoading.value = false; } })(),
-    (async () => { imagesLoading.value = true; try { const r = await getImages(taskId); images.value = r.data.assets || []; } catch(e){} finally { imagesLoading.value = false; } })(),
     (async () => { videosLoading.value = true; try { const r = await getVideos(taskId); videos.value = r.data.assets || []; } catch(e){} finally { videosLoading.value = false; } })(),
-    (async () => { audiosLoading.value = true; try { const r = await getAudio(taskId); audios.value = r.data.assets || []; } catch(e){} finally { audiosLoading.value = false; } })(),
     (async () => { compositeLoading.value = true; try { const r = await getComposite(taskId); composite.value = r.data; } catch(e){} finally { compositeLoading.value = false; } })(),
   ]);
 }
@@ -169,19 +162,15 @@ function getMediaUrl(filePath) {
   return parts.length > 1 ? `/media/${parts[1]}` : filePath;
 }
 
-onMounted(() => loadSuccessTasks());
+onMounted(() => loadEligibleTasks());
 </script>
 
 <style lang="scss" scoped>
 .media-page { max-width: 1200px; }
 .page-hero { margin-bottom: var(--space-lg); }
-.media-toolbar { margin-bottom: var(--space-lg); }
+.media-toolbar { margin-bottom: var(--space-lg); display: flex; align-items: center; }
 .section-card { margin-bottom: var(--space-lg); }
-
-.section-title {
-  font-weight: 600;
-  font-size: 14px;
-}
+.section-title { font-weight: 600; font-size: 14px; }
 
 .video-grid {
   display: grid;

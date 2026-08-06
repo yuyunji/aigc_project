@@ -48,7 +48,7 @@ class Settings(BaseSettings):
     # ── FFmpeg 字幕拼接 ──
     ffmpeg_path: str = "ffmpeg"
     media_dir: str = "media"
-    auto_media_pipeline: bool = True  # 是否自动执行媒体链路（可关闭）
+    auto_media_pipeline: bool = False  # 默认关闭自动媒体管线，改为手动逐分镜触发
 
     class Config:
         env_file = ".env"

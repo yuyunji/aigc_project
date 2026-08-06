@@ -464,6 +464,77 @@ class TaskManager:
         self._update_status(task_id, "running", progress=99)
 
     # ------------------------------------------------------------------
+    # 按分镜独立触发方法
+    # ------------------------------------------------------------------
+
+    async def generate_scene_image(self, task_id: str, scene: dict) -> dict:
+        """为单个分镜生成图片，返回 {status, file_path, error}"""
+        scene_num = scene["scene_number"]
+        visual = scene.get("visual_description", "") or scene.get("description", "")
+        prebuilt = scene.get("image_prompt", "")
+
+        if prebuilt and prebuilt.strip():
+            prompt = prebuilt
+        elif visual and visual.strip():
+            prompt = visual[:500]
+        else:
+            prompt = "cinematic scene, dramatic lighting, 4K, high quality"
+
+        asset = self._create_media_asset(task_id, "image", scene_num, prompt)
+        try:
+            from app.services.wanx_service import wanx_service
+            path = await asyncio.wait_for(
+                wanx_service.generate_image(task_id, scene_num, prompt),
+                timeout=180,
+            )
+            self._update_media_asset(asset.id, "success", file_path=path)
+            return {"status": "success", "file_path": path, "asset_id": asset.id}
+        except asyncio.TimeoutError:
+            self._update_media_asset(asset.id, "failed", error="图片生成超时（180s）")
+            return {"status": "failed", "error": "图片生成超时，请重试"}
+        except Exception as e:
+            err = str(e)[:500]
+            self._update_media_asset(asset.id, "failed", error=err)
+            return {"status": "failed", "error": err}
+
+    async def generate_scene_video(self, task_id: str, scene: dict) -> dict:
+        """为单个分镜生成视频 (MiniMax-H3)，返回 {status, file_path, error}"""
+        scene_num = scene["scene_number"]
+        visual = scene.get("visual_description", "") or scene.get("description", "")
+        camera = scene.get("camera_movement", "")
+        dialogue = scene.get("dialogue", "")
+        location = scene.get("location", "")
+
+        sound = ""
+        if dialogue:
+            sound = f"Sound: characters speaking naturally, ambient {location or 'scene'} atmosphere"
+
+        parts = []
+        if camera:
+            parts.append(f"Camera: {camera}")
+        if visual:
+            parts.append(visual[:1500])
+        if sound:
+            parts.append(sound)
+        prompt = ". ".join(parts)[:2000]
+
+        asset = self._create_media_asset(task_id, "video", scene_num, prompt)
+        try:
+            path = await asyncio.wait_for(
+                minimax_service.generate_video(task_id, scene_num, prompt),
+                timeout=300,
+            )
+            self._update_media_asset(asset.id, "success", file_path=path)
+            return {"status": "success", "file_path": path, "asset_id": asset.id}
+        except asyncio.TimeoutError:
+            self._update_media_asset(asset.id, "failed", error="视频生成超时（300s）")
+            return {"status": "failed", "error": "视频生成超时，请重试"}
+        except Exception as e:
+            err = str(e)[:500]
+            self._update_media_asset(asset.id, "failed", error=err)
+            return {"status": "failed", "error": err}
+
+    # ------------------------------------------------------------------
     # 媒体链路辅助方法
     # ------------------------------------------------------------------
 

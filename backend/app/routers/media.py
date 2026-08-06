@@ -28,36 +28,60 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/media", tags=["媒体资源"])
 
 
-@router.post("/{task_id}/generate")
-async def trigger_media_generation(task_id: str):
-    """
-    为已有任务触发分镜图片生成（Stage 5）。
-    异步执行，立即返回。
-    """
+@router.post("/{task_id}/scene/{scene_number}/image")
+async def generate_scene_image(task_id: str, scene_number: int):
+    """为单个分镜生成图片 (Wan-X-Turbo)"""
+    scene = _get_scene_or_404(task_id, scene_number)
+    asyncio.create_task(_run_scene_image(task_id, scene))
+    return {"status": "started", "task_id": task_id, "scene_number": scene_number}
+
+
+@router.post("/{task_id}/scene/{scene_number}/video")
+async def generate_scene_video(task_id: str, scene_number: int):
+    """为单个分镜生成视频 (MiniMax-H3)"""
+    scene = _get_scene_or_404(task_id, scene_number)
+    asyncio.create_task(_run_scene_video(task_id, scene))
+    return {"status": "started", "task_id": task_id, "scene_number": scene_number}
+
+
+@router.post("/{task_id}/scene/{scene_number}/retry")
+async def retry_scene(task_id: str, scene_number: int):
+    """重置失败的分镜状态，允许重新执行"""
+    db = SessionLocal()
+    try:
+        failed = (
+            db.query(MediaAsset)
+            .filter(
+                MediaAsset.task_id == task_id,
+                MediaAsset.scene_number == scene_number,
+                MediaAsset.status == "failed",
+            )
+            .all()
+        )
+        for a in failed:
+            a.status = "pending"
+            a.error_message = None
+        db.commit()
+        return {"status": "reset", "count": len(failed)}
+    finally:
+        db.close()
+
+
+def _get_scene_or_404(task_id: str, scene_number: int) -> dict:
+    """获取单个分镜数据，不存在则 404"""
     db = SessionLocal()
     try:
         task = db.query(Task).filter(Task.id == task_id).first()
         if not task:
             raise HTTPException(status_code=404, detail=f"任务 {task_id} 不存在")
-        if task.status != "success" or task.progress < 78:
-            raise HTTPException(
-                status_code=400,
-                detail=f"任务未完成分镜生成阶段（status={task.status}, progress={task.progress}%）",
-            )
-
-        storyboards = (
+        s = (
             db.query(Storyboard)
-            .filter(Storyboard.task_id == task_id)
-            .order_by(Storyboard.scene_number.asc())
-            .all()
+            .filter(Storyboard.task_id == task_id, Storyboard.scene_number == scene_number)
+            .first()
         )
-        if not storyboards:
-            raise HTTPException(status_code=400, detail="该任务无分镜数据")
-    finally:
-        db.close()
-
-    scene_list = [
-        {
+        if not s:
+            raise HTTPException(status_code=404, detail=f"分镜 {scene_number} 不存在")
+        return {
             "scene_number": s.scene_number,
             "scene_title": s.scene_title or "",
             "location": s.location or "",
@@ -70,22 +94,24 @@ async def trigger_media_generation(task_id: str):
             "duration_seconds": s.duration_seconds or 5.0,
             "description": s.description or "",
         }
-        for s in storyboards
-    ]
-
-    # 异步执行图片生成
-    asyncio.create_task(_run_generation(task_id, scene_list))
-
-    return {"status": "started", "task_id": task_id, "scene_count": len(scene_list)}
+    finally:
+        db.close()
 
 
-async def _run_generation(task_id: str, scene_list: list[dict]):
-    """后台执行 MiniMax-H3 视频生成"""
+async def _run_scene_image(task_id: str, scene: dict):
+    """后台执行单个分镜图片生成"""
     try:
-        await task_manager._run_storyboard_to_video(task_id, scene_list)
-        logger.info(f"[{task_id}] MiniMax 视频生成完成")
+        await task_manager.generate_scene_image(task_id, scene)
     except Exception as e:
-        logger.exception(f"[{task_id}] MiniMax 视频生成失败: {e}")
+        logger.exception(f"[{task_id}] scene {scene['scene_number']} image: {e}")
+
+
+async def _run_scene_video(task_id: str, scene: dict):
+    """后台执行单个分镜视频生成"""
+    try:
+        await task_manager.generate_scene_video(task_id, scene)
+    except Exception as e:
+        logger.exception(f"[{task_id}] scene {scene['scene_number']} video: {e}")
 
 
 def _get_task_or_404(task_id: str, db: Session) -> Task:

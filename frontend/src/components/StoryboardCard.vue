@@ -1,16 +1,12 @@
 <!--
-  分镜脚本卡片 — JSON 结构化渲染：标题/场景/运镜/台词/画面描述
+  分镜脚本卡片 — 结构化渲染 + 按分镜操作按钮（图片/视频/重试）
 -->
 <template>
   <div class="storyboard-card" v-loading="loading">
     <el-empty v-if="!loading && scenes.length === 0" description="分镜脚本尚未生成" />
 
     <div v-else class="storyboard-timeline">
-      <div
-        v-for="scene in scenes"
-        :key="scene.id"
-        class="timeline-item"
-      >
+      <div v-for="scene in scenes" :key="scene.id" class="timeline-item">
         <div class="timeline-marker">
           <span class="scene-num">{{ scene.scene_number }}</span>
         </div>
@@ -24,54 +20,62 @@
             </el-tag>
           </div>
 
-          <!-- 元信息行 -->
+          <!-- 元信息 -->
           <div class="scene-meta">
-            <span v-if="scene.location" class="meta-item">
-              <span class="meta-icon">📍</span>{{ scene.location }}
-            </span>
-            <span v-if="scene.time_of_day" class="meta-item">
-              <span class="meta-icon">🕐</span>{{ scene.time_of_day }}
-            </span>
-            <span v-if="scene.camera_movement" class="meta-item">
-              <span class="meta-icon">🎥</span>{{ scene.camera_movement }}
-            </span>
+            <span v-if="scene.location" class="meta-item"><span class="meta-icon">📍</span>{{ scene.location }}</span>
+            <span v-if="scene.time_of_day" class="meta-item"><span class="meta-icon">🕐</span>{{ scene.time_of_day }}</span>
+            <span v-if="scene.camera_movement" class="meta-item"><span class="meta-icon">🎥</span>{{ scene.camera_movement }}</span>
           </div>
 
-          <!-- 出场角色 -->
           <div v-if="scene.characters_in_scene" class="scene-characters">
             <span class="char-label">👥 出场：</span>
-            <el-tag
-              v-for="char in splitChars(scene.characters_in_scene)"
-              :key="char"
-              size="small"
-              effect="plain"
-              class="char-tag"
-            >{{ char }}</el-tag>
+            <el-tag v-for="char in splitChars(scene.characters_in_scene)" :key="char" size="small" effect="plain" class="char-tag">{{ char }}</el-tag>
           </div>
 
-          <!-- 画面描述 -->
           <div v-if="scene.visual_description" class="scene-visual">
             <div class="section-label">🖼️ 画面描述</div>
             <p>{{ scene.visual_description }}</p>
           </div>
 
-          <!-- 台词 -->
           <div v-if="scene.dialogue" class="scene-dialogue">
             <div class="section-label">💬 台词</div>
-            <div
-              v-for="(line, i) in splitLines(scene.dialogue)"
-              :key="i"
-              class="dialogue-line"
-              :class="{ 'is-speaker': isSpeakerLine(line) }"
-            >{{ line }}</div>
+            <div v-for="(line, i) in splitLines(scene.dialogue)" :key="i" class="dialogue-line" :class="{ 'is-speaker': isSpeakerLine(line) }">{{ line }}</div>
           </div>
 
-          <!-- Image Prompt（折叠） -->
-          <el-collapse v-if="scene.image_prompt" class="prompt-collapse">
-            <el-collapse-item title="🎨 AI Image Prompt">
-              <code class="prompt-code">{{ scene.image_prompt }}</code>
-            </el-collapse-item>
-          </el-collapse>
+          <!-- ── 操作区 ── -->
+          <div class="scene-actions">
+            <div class="actions-row">
+              <el-button size="small" type="primary" plain :loading="mediaState(scene.scene_number, 'image') === 'running'" :disabled="mediaState(scene.scene_number, 'image') !== 'idle'" @click="$emit('generate-image', scene.scene_number)">
+                🎨 生成图片
+              </el-button>
+              <el-button size="small" type="success" plain :loading="mediaState(scene.scene_number, 'video') === 'running'" :disabled="mediaState(scene.scene_number, 'video') !== 'idle'" @click="$emit('generate-video', scene.scene_number)">
+                🎥 生成视频
+              </el-button>
+              <el-button v-if="mediaState(scene.scene_number, 'any') === 'failed'" size="small" type="warning" plain @click="$emit('retry', scene.scene_number)">
+                🔄 重试
+              </el-button>
+            </div>
+
+            <!-- 状态标签 -->
+            <div class="status-row" v-if="getSceneMedia(scene.scene_number).length">
+              <el-tag v-for="m in getSceneMedia(scene.scene_number)" :key="m.id" size="small" :type="statusType(m)" effect="plain" round class="status-tag">
+                {{ m.asset_type === 'image' ? '🖼️' : '🎥' }} {{ statusLabel(m) }}
+              </el-tag>
+            </div>
+
+            <!-- 错误信息 -->
+            <div v-if="getSceneMedia(scene.scene_number).some(m => m.status === 'failed' && m.error_message)" class="error-row">
+              <el-alert
+                v-for="m in getSceneMedia(scene.scene_number).filter(x => x.status === 'failed' && x.error_message)"
+                :key="m.id"
+                :title="m.error_message"
+                type="error"
+                :closable="false"
+                show-icon
+                class="error-alert"
+              />
+            </div>
+          </div>
         </el-card>
       </div>
     </div>
@@ -79,186 +83,70 @@
 </template>
 
 <script setup>
-defineProps({
+const props = defineProps({
   scenes: { type: Array, default: () => [] },
   loading: { type: Boolean, default: false },
+  taskId: { type: String, default: "" },
+  mediaAssets: { type: Array, default: () => [] },
 });
 
-function splitChars(text) {
-  return text.split(/[、,，]/).map((s) => s.trim()).filter(Boolean);
+defineEmits(["generate-image", "generate-video", "retry"]);
+
+function getSceneMedia(sceneNumber) {
+  return (props.mediaAssets || []).filter(
+    (m) => m.scene_number === sceneNumber
+  );
 }
-function splitLines(text) {
-  return text.split("\n").filter((l) => l.trim());
+
+function mediaState(sceneNumber, type) {
+  const assets = getSceneMedia(sceneNumber);
+  if (type === "any" && assets.some((a) => a.status === "failed")) return "failed";
+  const matching = assets.filter((a) => (type === "image" ? a.asset_type === "image" : a.asset_type === "video"));
+  if (matching.some((a) => a.status === "success")) return "success";
+  if (matching.some((a) => a.status === "running")) return "running";
+  return "idle";
 }
-function isSpeakerLine(line) {
-  return /^[^：:]+[：:]/.test(line);
+
+function statusType(m) {
+  return m.status === "success" ? "success" : m.status === "failed" ? "danger" : "warning";
 }
+function statusLabel(m) {
+  return m.status === "success" ? "已完成" : m.status === "failed" ? "失败" : "生成中";
+}
+
+function splitChars(text) { return (text || "").split(/[、,，]/).map((s) => s.trim()).filter(Boolean); }
+function splitLines(text) { return (text || "").split("\n").filter((l) => l.trim()); }
+function isSpeakerLine(line) { return /^[^：:]+[：:]/.test(line); }
 </script>
 
 <style lang="scss" scoped>
-.storyboard-timeline {
-  position: relative;
-  padding-left: 44px;
+.storyboard-timeline { position: relative; padding-left: 44px; }
+.storyboard-timeline::before { content: ""; position: absolute; left: 19px; top: 0; bottom: 0; width: 2px; background: linear-gradient(to bottom, var(--color-primary), var(--color-primary-light) 80%, transparent); }
+.timeline-item { position: relative; margin-bottom: 24px; }
+.timeline-item:last-child { margin-bottom: 0; }
+.timeline-marker { position: absolute; left: -44px; top: 16px; width: 40px; height: 40px; display: flex; align-items: center; justify-content: center; }
+.scene-num { width: 34px; height: 34px; border-radius: 50%; background: var(--color-primary); color: #fff; font-size: 14px; font-weight: 700; display: flex; align-items: center; justify-content: center; box-shadow: 0 2px 10px rgba(99, 102, 241, 0.35); }
+.timeline-card { transition: all var(--transition-base); }
+.timeline-card:hover { transform: translateX(4px); }
+.scene-header { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
+.scene-title { font-size: 16px; font-weight: 700; color: var(--color-text-primary); margin: 0; }
+.scene-meta { display: flex; flex-wrap: wrap; gap: 14px; margin-bottom: 10px; }
+.meta-item { font-size: 13px; color: var(--color-text-secondary); display: flex; align-items: center; gap: 4px; }
+.scene-characters { display: flex; align-items: center; gap: 6px; margin-bottom: 12px; flex-wrap: wrap; }
+.char-label { font-size: 13px; color: var(--color-text-secondary); }
+.char-tag { font-size: 12px; }
+.scene-visual { margin-bottom: 12px; }
+.scene-visual p { font-size: 13px; line-height: 1.7; color: var(--color-text-primary); }
+.scene-dialogue { margin-bottom: 8px; }
+.dialogue-line { font-size: 13px; line-height: 1.7; color: var(--color-text-primary); padding: 4px 0; padding-left: 8px; border-left: 2px solid var(--color-primary-light); }
+.dialogue-line.is-speaker { font-weight: 600; color: var(--color-primary-dark); border-left-color: var(--color-primary); }
+.section-label { font-size: 12px; font-weight: 600; color: var(--color-text-tertiary); text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 4px; }
 
-  &::before {
-    content: "";
-    position: absolute;
-    left: 19px;
-    top: 0;
-    bottom: 0;
-    width: 2px;
-    background: linear-gradient(to bottom, var(--color-primary), var(--color-primary-light) 80%, transparent);
-  }
-}
-
-.timeline-item {
-  position: relative;
-  margin-bottom: 24px;
-  &:last-child { margin-bottom: 0; }
-}
-
-.timeline-marker {
-  position: absolute;
-  left: -44px;
-  top: 16px;
-  width: 40px;
-  height: 40px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-
-  .scene-num {
-    width: 34px;
-    height: 34px;
-    border-radius: 50%;
-    background: var(--color-primary);
-    color: #fff;
-    font-size: 14px;
-    font-weight: 700;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    box-shadow: 0 2px 10px rgba(99, 102, 241, 0.35);
-  }
-}
-
-.timeline-card {
-  transition: all var(--transition-base);
-  &:hover { transform: translateX(4px); }
-}
-
-// 标题行
-.scene-header {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  margin-bottom: 10px;
-
-  .scene-title {
-    font-size: 16px;
-    font-weight: 700;
-    color: var(--color-text-primary);
-    margin: 0;
-  }
-}
-
-// 元信息
-.scene-meta {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 14px;
-  margin-bottom: 10px;
-}
-
-.meta-item {
-  font-size: 13px;
-  color: var(--color-text-secondary);
-  display: flex;
-  align-items: center;
-  gap: 4px;
-
-  .meta-icon { font-size: 14px; }
-}
-
-// 角色标签
-.scene-characters {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  margin-bottom: 12px;
-  flex-wrap: wrap;
-
-  .char-label {
-    font-size: 13px;
-    color: var(--color-text-secondary);
-  }
-
-  .char-tag {
-    font-size: 12px;
-  }
-}
-
-// 画面描述
-.scene-visual {
-  margin-bottom: 12px;
-
-  p {
-    font-size: 13px;
-    line-height: 1.7;
-    color: var(--color-text-primary);
-  }
-}
-
-// 台词
-.scene-dialogue {
-  margin-bottom: 8px;
-}
-
-.dialogue-line {
-  font-size: 13px;
-  line-height: 1.7;
-  color: var(--color-text-primary);
-  padding: 4px 0;
-  padding-left: 8px;
-  border-left: 2px solid var(--color-primary-light);
-
-  &.is-speaker {
-    font-weight: 600;
-    color: var(--color-primary-dark);
-    border-left-color: var(--color-primary);
-  }
-}
-
-// 公共标签
-.section-label {
-  font-size: 12px;
-  font-weight: 600;
-  color: var(--color-text-tertiary);
-  text-transform: uppercase;
-  letter-spacing: 0.5px;
-  margin-bottom: 4px;
-}
-
-// Prompt 折叠
-.prompt-collapse {
-  margin-top: 10px;
-  border: none;
-
-  :deep(.el-collapse-item__header) {
-    font-size: 12px;
-    color: var(--color-text-tertiary);
-    border: none;
-  }
-  :deep(.el-collapse-item__wrap) {
-    border: none;
-  }
-}
-
-.prompt-code {
-  font-size: 12px;
-  color: var(--color-text-secondary);
-  font-family: var(--font-mono);
-  white-space: pre-wrap;
-  word-break: break-word;
-}
+.scene-actions { margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--color-border-light); }
+.actions-row { display: flex; gap: 8px; flex-wrap: wrap; }
+.status-row { margin-top: 8px; display: flex; gap: 6px; flex-wrap: wrap; }
+.status-tag { font-size: 11px; }
+.error-row { margin-top: 8px; }
+.error-alert { margin-top: 4px; }
+.error-alert :deep(.el-alert__title) { font-size: 12px; }
 </style>

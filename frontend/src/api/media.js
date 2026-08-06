@@ -27,3 +27,18 @@ export function getAudio(taskId) {
 export function getComposite(taskId) {
   return apiClient.get(`/api/media/${taskId}/composite`);
 }
+
+/** 为单个分镜生成图片 */
+export function generateSceneImage(taskId, sceneNumber) {
+  return apiClient.post(`/api/media/${taskId}/scene/${sceneNumber}/image`);
+}
+
+/** 为单个分镜生成视频 */
+export function generateSceneVideo(taskId, sceneNumber) {
+  return apiClient.post(`/api/media/${taskId}/scene/${sceneNumber}/video`);
+}
+
+/** 重置失败分镜 */
+export function retryScene(taskId, sceneNumber) {
+  return apiClient.post(`/api/media/${taskId}/scene/${sceneNumber}/retry`);
+}
