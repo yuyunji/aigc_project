@@ -12,6 +12,8 @@ import json
 import logging
 import re
 
+import httpx
+
 from app.config import settings
 from app.database import SessionLocal
 from app.models.task import Task
@@ -215,18 +217,43 @@ class TaskManager:
             ## 角色名
             描述内容...
 
+        注意：角色描述内部可能包含 ## 分组标题（如 ## 性格特征、## 外貌描述），
+        这些应合并到上一个角色中，而非拆分为独立角色。
+
         返回: [{"name": "角色名", "description": "描述"}, ...]
         """
-        results = []
         pattern = r"##\s+(.+?)\n(.*?)(?=##\s+|\Z)"
         matches = re.findall(pattern, markdown_text, re.DOTALL)
 
+        # 非人名的分组标题关键词
+        SECTION_KEYWORDS = [
+            "性格", "外貌", "背景", "弧线", "能力", "关系", "定位",
+            "年龄", "身份", "技能", "武功", "武器", "功法", "羁绊",
+            "特征", "描述", "故事", "经历", "成长", "转变", "结局",
+            "心理", "情绪", "脾气", "发型", "身材", "衣着", "服饰",
+            "标志", "细节", "面容", "门派", "种族", "性别",
+        ]
+
+        raw_entries = []
         for name, desc in matches:
             name = name.strip()
             desc = desc.strip()
-            # 跳过分镜标题混入的情况
-            if name and desc and "分镜" not in name:
-                results.append({"name": name[:100], "description": desc[:3000]})
+            if not name or not desc:
+                continue
+            if "分镜" in name:
+                continue
+            raw_entries.append({"name": name[:100], "description": desc[:3000]})
+
+        # 合并分组标题到上一个角色
+        results = []
+        for entry in raw_entries:
+            is_section = any(kw in entry["name"] for kw in SECTION_KEYWORDS)
+            if is_section and results:
+                # 将分组内容追加到上一个角色
+                prev = results[-1]
+                prev["description"] += f"\n\n## {entry['name']}\n{entry['description']}"
+            else:
+                results.append(entry)
 
         if not results:
             results.append({
@@ -480,11 +507,35 @@ class TaskManager:
         else:
             prompt = "cinematic scene, dramatic lighting, 4K, high quality"
 
+        # 全局风格前缀
+        if settings.ark_image_style:
+            prompt = f"{settings.ark_image_style}. {prompt}"
+
+        # 注入出场角色外貌特征，确保跨分镜角色一致性
+        char_appearance = self._get_characters_appearance(
+            task_id, scene.get("characters_in_scene", "")
+        )
+
+        # 为第一个出场角色生成定妆参考图，作为图片生成的 identity anchor
+        ref_image_path = None
+        char_names = self._parse_char_names(scene.get("characters_in_scene", ""))
+        if char_names and char_appearance:
+            ref_image_path = await self._ensure_character_ref(
+                task_id, char_names[0], char_appearance
+            )
+        if ref_image_path:
+            prompt = (
+                f"{prompt}. "
+                f"Keep the character appearance exactly as in the reference image, "
+                f"same face, same outfit, same hair style"
+            )
+
+        self._cleanup_asset(task_id, scene_num, "image")
         asset = self._create_media_asset(task_id, "image", scene_num, prompt)
         try:
-            from app.services.wanx_service import wanx_service
+            from app.services.seedream_service import seedream_service
             path = await asyncio.wait_for(
-                wanx_service.generate_image(task_id, scene_num, prompt),
+                seedream_service.generate_image(task_id, scene_num, prompt, ref_image_path),
                 timeout=180,
             )
             self._update_media_asset(asset.id, "success", file_path=path)
@@ -518,6 +569,7 @@ class TaskManager:
             parts.append(sound)
         prompt = ". ".join(parts)[:2000]
 
+        self._cleanup_asset(task_id, scene_num, "video")
         asset = self._create_media_asset(task_id, "video", scene_num, prompt)
         try:
             path = await asyncio.wait_for(
@@ -537,6 +589,136 @@ class TaskManager:
     # ------------------------------------------------------------------
     # 媒体链路辅助方法
     # ------------------------------------------------------------------
+
+    @staticmethod
+    def _cleanup_asset(task_id: str, scene_number: int, asset_type: str) -> int:
+        """删除同分镜同类型的旧记录，防止标签堆积"""
+        db = SessionLocal()
+        try:
+            stale = (
+                db.query(MediaAsset)
+                .filter(
+                    MediaAsset.task_id == task_id,
+                    MediaAsset.scene_number == scene_number,
+                    MediaAsset.asset_type == asset_type,
+                )
+                .all()
+            )
+            count = len(stale)
+            for a in stale:
+                db.delete(a)
+            db.commit()
+            return count
+        finally:
+            db.close()
+
+    @staticmethod
+    def _get_characters_appearance(task_id: str, characters_in_scene: str) -> str:
+        """从角色库中提取出场角色的外貌描述，用于注入图片 prompt"""
+        if not characters_in_scene or not characters_in_scene.strip():
+            return ""
+
+        # 解析角色名（中/英逗号、顿号分隔）
+        import re
+        names = re.split(r"[,，、]+", characters_in_scene)
+        names = [n.strip() for n in names if n.strip()]
+        if not names:
+            return ""
+
+        db = SessionLocal()
+        try:
+            chars = (
+                db.query(Character)
+                .filter(Character.task_id == task_id, Character.name.in_(names))
+                .all()
+            )
+            if not chars:
+                return ""
+
+            lines = []
+            for c in chars:
+                desc = c.description or ""
+                # 提取外貌相关字段：外貌、特征、衣着、发型、身材
+                appearance_parts = []
+                for m in re.finditer(
+                    r"[-*]\s*\*\*(.+?)\*\*[：:]\s*(.+)", desc
+                ):
+                    key = m.group(1).strip()
+                    value = m.group(2).strip()
+                    if any(
+                        kw in key
+                        for kw in ["外貌", "特征", "衣着", "发型", "身材", "标志", "细节", "服饰", "体型", "面容"]
+                    ):
+                        appearance_parts.append(value)
+
+                if appearance_parts:
+                    lines.append(f"{c.name}: {'; '.join(appearance_parts)}")
+
+            return "\n".join(lines)
+        finally:
+            db.close()
+
+    @staticmethod
+    def _parse_char_names(characters_in_scene: str) -> list[str]:
+        """从 characters_in_scene 字段解析角色名列表"""
+        if not characters_in_scene or not characters_in_scene.strip():
+            return []
+        import re
+        names = re.split(r"[,，、]+", characters_in_scene)
+        return [n.strip() for n in names if n.strip()]
+
+    @staticmethod
+    async def _ensure_character_ref(
+        task_id: str, char_name: str, char_appearance: str
+    ) -> str | None:
+        """
+        确保角色有定妆参考图。已存在则直接返回路径，否则调用 Seedream 生成。
+        参考图保存在 media/{task_id}/characters/ 下。
+        """
+        from app.services.seedream_service import seedream_service
+        import os
+
+        ref_dir = os.path.join(settings.media_dir, task_id, "characters")
+        os.makedirs(ref_dir, exist_ok=True)
+        # 安全文件名
+        safe_name = char_name.replace("/", "_").replace("\\", "_")[:50]
+        ref_path = os.path.join(ref_dir, f"{safe_name}.png")
+
+        # 已存在则直接返回
+        if os.path.isfile(ref_path):
+            return ref_path
+
+        # 提取外貌 prompt
+        lines = char_appearance.split("\n")
+        appearance_text = ""
+        for line in lines:
+            if line.startswith(f"{char_name}:"):
+                appearance_text = line[len(char_name) + 1:].strip()
+                break
+        if not appearance_text:
+            appearance_text = char_appearance.split("\n")[0] if char_appearance else ""
+
+        if not appearance_text:
+            return None
+
+        try:
+            ref_url = await seedream_service._generate(
+                task_id,
+                f"{settings.ark_image_style or ''}. "
+                f"Character reference portrait of {char_name}: {appearance_text}. "
+                "Front view, half-body, clean background, full outfit, clear face",
+            )
+            # 下载参考图
+            async with httpx.AsyncClient(timeout=60) as client:
+                resp = await client.get(ref_url)
+                resp.raise_for_status()
+            with open(ref_path, "wb") as f:
+                f.write(resp.content)
+            logger.info(f"[{task_id}] 角色定妆参考图已生成: {char_name} → {ref_path}")
+            return ref_path
+        except Exception as e:
+            logger.warning(f"[{task_id}] 角色参考图生成失败: {char_name}: {e}")
+            return None
 
     @staticmethod
     def _create_media_asset(

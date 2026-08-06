@@ -12,7 +12,7 @@ from app.utils.exceptions import LLMAPIError
 logger = logging.getLogger(__name__)
 
 MINIMAX_SUBMIT_URL = "https://api.minimaxi.com/v2/video_generation"
-MINIMAX_QUERY_URL = "https://api.minimaxi.com/v2/video_generation/query"
+MINIMAX_QUERY_URL = "https://api.minimaxi.com/v2/query/video_generation"
 
 
 class MiniMaxService:
@@ -103,23 +103,29 @@ class MiniMaxService:
                 )
                 data = resp.json()
 
-            status = data.get("status", "")
+            # v2 API 返回 items 数组，找到匹配 task_id 的条目
+            items = data.get("items", [])
+            matched = next((it for it in items if it.get("id") == mm_task_id), None)
+            if not matched:
+                matched = items[0] if items else {}
+
+            status = matched.get("status", "")
             logger.debug(
                 f"[{task_id}] MiniMax 轮询 (分镜{scene_number}, "
                 f"attempt {attempt + 1}/{self.poll_max}): {status}"
             )
 
-            if status == "Success":
-                video_url = data.get("video_url", "")
+            if status == "succeeded":
+                video_url = matched.get("content", {}).get("url", "")
                 if not video_url:
-                    raise LLMAPIError("MiniMax 完成但无 video_url")
+                    raise LLMAPIError("MiniMax 完成但无 video URL")
                 return video_url
 
-            if status == "Failed":
-                err = data.get("error", {}).get("message", "未知错误")
+            if status == "failed":
+                err = matched.get("error", {}).get("message", "未知错误")
                 raise LLMAPIError(f"MiniMax 视频生成失败: {err}")
 
-            # Pending / Processing → 继续轮询
+            # queued / running → 继续轮询
 
         raise LLMAPIError(
             f"MiniMax 视频生成超时（分镜{scene_number}，"

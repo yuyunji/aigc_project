@@ -46,23 +46,22 @@ async def generate_scene_video(task_id: str, scene_number: int):
 
 @router.post("/{task_id}/scene/{scene_number}/retry")
 async def retry_scene(task_id: str, scene_number: int):
-    """重置失败的分镜状态，允许重新执行"""
+    """删除失败/完成/卡死的媒体记录，允许重新执行"""
     db = SessionLocal()
     try:
-        failed = (
+        stale = (
             db.query(MediaAsset)
             .filter(
                 MediaAsset.task_id == task_id,
                 MediaAsset.scene_number == scene_number,
-                MediaAsset.status == "failed",
             )
             .all()
         )
-        for a in failed:
-            a.status = "pending"
-            a.error_message = None
+        count = len(stale)
+        for a in stale:
+            db.delete(a)
         db.commit()
-        return {"status": "reset", "count": len(failed)}
+        return {"status": "reset", "count": count}
     finally:
         db.close()
 

@@ -135,8 +135,8 @@ const sections = computed(() => {
 }
 
 .act-card {
-  transition: all var(--transition-base);
-  &:hover { transform: translateX(4px); }
+  transition: box-shadow 0.2s, border-color 0.2s;
+  &:hover { box-shadow: 0 4px 24px rgba(99, 102, 241, 0.15) !important; border-color: var(--color-primary-light); }
   :deep(.el-card__header) { padding: 14px 20px; background: #FAFAFB; }
   :deep(.el-card__body) { padding: 18px 20px; }
 }

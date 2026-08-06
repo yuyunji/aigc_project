@@ -45,6 +45,12 @@ class Settings(BaseSettings):
     minimax_poll_interval: int = 5        # 轮询间隔（秒）
     minimax_poll_max_retries: int = 60    # 约 5 分钟
 
+    # ── 豆包 Seedream (分镜图片生成) ──
+    ark_api_key: str = ""
+    ark_image_model: str = "doubao-seedream-5-0-pro-260628"
+    ark_image_size: str = "2K"
+    ark_image_style: str = ""  # 全局风格 prompt 前缀，如 "Japanese anime style, manga art"
+
     # ── FFmpeg 字幕拼接 ──
     ffmpeg_path: str = "ffmpeg"
     media_dir: str = "media"

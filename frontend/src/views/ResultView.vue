@@ -143,8 +143,18 @@ async function loadResults(taskId) {
   ]);
 }
 
-async function onGenerateImage(sn) { try { await generateSceneImage(selectedTaskId.value, sn); ElMessage.success(`分镜${sn} 图片生成已启动`); setTimeout(() => loadResults(selectedTaskId.value), 3000); } catch(e){} }
-async function onGenerateVideo(sn) { try { await generateSceneVideo(selectedTaskId.value, sn); ElMessage.success(`分镜${sn} 视频生成已启动`); setTimeout(() => loadResults(selectedTaskId.value), 3000); } catch(e){} }
+function pollUntilDone(pollCount = 0) {
+  const MAX = 40; // 最多轮询 40 次（约 2 分钟）
+  if (pollCount >= MAX) return;
+  setTimeout(async () => {
+    await loadResults(selectedTaskId.value);
+    const stillRunning = mediaAssets.value.some(m => m.status === 'running');
+    if (stillRunning) pollUntilDone(pollCount + 1);
+  }, 3000);
+}
+
+async function onGenerateImage(sn) { try { await generateSceneImage(selectedTaskId.value, sn); ElMessage.success(`分镜${sn} 图片生成已启动`); pollUntilDone(); } catch(e){} }
+async function onGenerateVideo(sn) { try { await generateSceneVideo(selectedTaskId.value, sn); ElMessage.success(`分镜${sn} 视频生成已启动`); pollUntilDone(); } catch(e){} }
 async function onRetryScene(sn) { try { await retryScene(selectedTaskId.value, sn); ElMessage.success(`分镜${sn} 已重置`); await loadResults(selectedTaskId.value); } catch(e){} }
 
 onMounted(() => loadCompletedTasks());

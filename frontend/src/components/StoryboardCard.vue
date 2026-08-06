@@ -27,6 +27,11 @@
             <span v-if="scene.camera_movement" class="meta-item"><span class="meta-icon">🎥</span>{{ scene.camera_movement }}</span>
           </div>
 
+          <!-- 生成图片 -->
+          <div v-if="getSceneImage(scene.scene_number)" class="scene-image">
+            <img :src="getMediaUrl(getSceneImage(scene.scene_number).file_path)" :alt="scene.scene_title" />
+          </div>
+
           <div v-if="scene.characters_in_scene" class="scene-characters">
             <span class="char-label">👥 出场：</span>
             <el-tag v-for="char in splitChars(scene.characters_in_scene)" :key="char" size="small" effect="plain" class="char-tag">{{ char }}</el-tag>
@@ -45,11 +50,25 @@
           <!-- ── 操作区 ── -->
           <div class="scene-actions">
             <div class="actions-row">
-              <el-button size="small" type="primary" plain :loading="mediaState(scene.scene_number, 'image') === 'running'" :disabled="mediaState(scene.scene_number, 'image') !== 'idle'" @click="$emit('generate-image', scene.scene_number)">
-                🎨 生成图片
+              <el-button
+                size="small"
+                :type="imageState(scene.scene_number) === 'success' ? 'warning' : 'primary'"
+                plain
+                :loading="imageState(scene.scene_number) === 'running'"
+                :disabled="imageState(scene.scene_number) === 'running'"
+                @click="$emit('generate-image', scene.scene_number)"
+              >
+                {{ imageState(scene.scene_number) === 'success' ? '🔄 重新生成图片' : '🎨 生成图片' }}
               </el-button>
-              <el-button size="small" type="success" plain :loading="mediaState(scene.scene_number, 'video') === 'running'" :disabled="mediaState(scene.scene_number, 'video') !== 'idle'" @click="$emit('generate-video', scene.scene_number)">
-                🎥 生成视频
+              <el-button
+                size="small"
+                :type="videoState(scene.scene_number) === 'success' ? 'warning' : 'success'"
+                plain
+                :loading="videoState(scene.scene_number) === 'running'"
+                :disabled="videoState(scene.scene_number) === 'running'"
+                @click="$emit('generate-video', scene.scene_number)"
+              >
+                {{ videoState(scene.scene_number) === 'success' ? '🔄 重新生成视频' : '🎥 生成视频' }}
               </el-button>
               <el-button v-if="mediaState(scene.scene_number, 'any') === 'failed'" size="small" type="warning" plain @click="$emit('retry', scene.scene_number)">
                 🔄 重试
@@ -92,11 +111,20 @@ const props = defineProps({
 
 defineEmits(["generate-image", "generate-video", "retry"]);
 
+function getSceneImage(sceneNumber) {
+  return (props.mediaAssets || []).find(
+    (m) => m.scene_number === sceneNumber && m.asset_type === "image" && m.status === "success"
+  );
+}
+
 function getSceneMedia(sceneNumber) {
   return (props.mediaAssets || []).filter(
     (m) => m.scene_number === sceneNumber
   );
 }
+
+function imageState(sceneNumber) { return mediaState(sceneNumber, "image"); }
+function videoState(sceneNumber) { return mediaState(sceneNumber, "video"); }
 
 function mediaState(sceneNumber, type) {
   const assets = getSceneMedia(sceneNumber);
@@ -117,6 +145,12 @@ function statusLabel(m) {
 function splitChars(text) { return (text || "").split(/[、,，]/).map((s) => s.trim()).filter(Boolean); }
 function splitLines(text) { return (text || "").split("\n").filter((l) => l.trim()); }
 function isSpeakerLine(line) { return /^[^：:]+[：:]/.test(line); }
+
+function getMediaUrl(filePath) {
+  if (!filePath) return "";
+  const parts = filePath.replace(/\\/g, "/").split("/media/");
+  return parts.length > 1 ? `/media/${parts[1]}` : filePath;
+}
 </script>
 
 <style lang="scss" scoped>
@@ -126,8 +160,8 @@ function isSpeakerLine(line) { return /^[^：:]+[：:]/.test(line); }
 .timeline-item:last-child { margin-bottom: 0; }
 .timeline-marker { position: absolute; left: -44px; top: 16px; width: 40px; height: 40px; display: flex; align-items: center; justify-content: center; }
 .scene-num { width: 34px; height: 34px; border-radius: 50%; background: var(--color-primary); color: #fff; font-size: 14px; font-weight: 700; display: flex; align-items: center; justify-content: center; box-shadow: 0 2px 10px rgba(99, 102, 241, 0.35); }
-.timeline-card { transition: all var(--transition-base); }
-.timeline-card:hover { transform: translateX(4px); }
+.timeline-card { transition: box-shadow 0.2s, border-color 0.2s; }
+.timeline-card:hover { box-shadow: 0 4px 24px rgba(99, 102, 241, 0.15) !important; border-color: var(--color-primary-light); }
 .scene-header { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
 .scene-title { font-size: 16px; font-weight: 700; color: var(--color-text-primary); margin: 0; }
 .scene-meta { display: flex; flex-wrap: wrap; gap: 14px; margin-bottom: 10px; }
@@ -135,6 +169,20 @@ function isSpeakerLine(line) { return /^[^：:]+[：:]/.test(line); }
 .scene-characters { display: flex; align-items: center; gap: 6px; margin-bottom: 12px; flex-wrap: wrap; }
 .char-label { font-size: 13px; color: var(--color-text-secondary); }
 .char-tag { font-size: 12px; }
+.scene-image {
+  margin-bottom: 14px;
+  border-radius: var(--radius-md);
+  overflow: hidden;
+  border: 1px solid var(--color-border-light);
+
+  img {
+    width: 100%;
+    display: block;
+    aspect-ratio: 16 / 9;
+    object-fit: cover;
+  }
+}
+
 .scene-visual { margin-bottom: 12px; }
 .scene-visual p { font-size: 13px; line-height: 1.7; color: var(--color-text-primary); }
 .scene-dialogue { margin-bottom: 8px; }
