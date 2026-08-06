@@ -21,10 +21,7 @@ from app.models.storyboard import Storyboard
 from app.models.media import MediaAsset
 from app.services.text_processor import TextProcessor
 from app.services.llm_service import llm_service
-from app.services.prompt_builder import prompt_builder
-from app.services.wanx_service import wanx_service
-from app.services.seedance_service import seedance_service
-from app.services.tts_service import tts_service
+from app.services.minimax_service import minimax_service
 from app.services.video_composer import video_composer
 from app.utils.exceptions import (
     LLMAPIError,
@@ -174,33 +171,17 @@ class TaskManager:
 
         self._save_storyboards(task_id, scene_list)
 
-        # ── 阶段 5-8：媒体链路（可选，自动执行） ──
-        image_paths = []
+        # ── 阶段 5-6：媒体链路（MiniMax-H3 文生视频 + FFmpeg 拼接） ──
         video_paths = []
-        audio_paths = []
         if settings.auto_media_pipeline:
-            # 5. 分镜图片生成
-            image_paths = await self._run_image_generation(
-                task_id, scene_list
-            )
-            # 6. 图生视频
-            video_paths = await self._run_video_generation(
-                task_id, scene_list, image_paths
-            )
-            # 7. 角色配音
-            audio_paths = await self._run_tts_generation(
-                task_id, character_list
-            )
-            # 8. 字幕合成
-            await self._run_composite(
-                task_id, video_paths, audio_paths, scene_list, character_list
-            )
+            video_paths = await self._run_storyboard_to_video(task_id, scene_list)
+            await self._run_composite(task_id, video_paths, None, scene_list, character_list)
 
         # ── 完成 ──
         self._update_status(task_id, "success", progress=100)
         summary = f"大纲1篇, 角色{len(character_list)}个, 分镜{len(scene_list)}个"
         if settings.auto_media_pipeline:
-            summary += f", 图片{len(image_paths)}张, 视频{len(video_paths)}段, 配音{len(audio_paths)}段"
+            summary += f", 视频{len(video_paths)}段"
         logger.info(f"[{task_id}] ✅ 级联任务完成: {summary}")
 
     # ------------------------------------------------------------------
@@ -366,67 +347,72 @@ class TaskManager:
         return results
 
     # ------------------------------------------------------------------
-    # 阶段 5-8：媒体链路
+    # 阶段 5-6：媒体链路 (MiniMax-H3)
     # ------------------------------------------------------------------
 
-    async def _run_image_generation(
+    async def _run_storyboard_to_video(
         self, task_id: str, scene_list: list[dict]
     ) -> list[str]:
         """
-        阶段5：为每个分镜生成图片（Wan-X-Turbo）。
-        返回: 本地图片路径列表
+        阶段5：分镜→视频 (MiniMax-H3 文生视频，含内置音频)。
+        参考小云雀：每分镜一键生成视频，Prompt 含视觉+音频描述。
         """
-        logger.info(f"[{task_id}] 阶段5: 分镜图片生成 ({len(scene_list)} 个分镜)")
+        total = len(scene_list)
+        logger.info(f"[{task_id}] 阶段5: 分镜→视频 MiniMax-H3 ({total} 个分镜)")
         self._update_status(task_id, "running", progress=78)
 
-        image_paths = []
-        total = len(scene_list)
-        MAX_RETRIES = 1  # 每个分镜最多重试 1 次
+        video_paths = []
+        MAX_RETRIES = 1
 
         for i, scene in enumerate(scene_list):
             scene_num = scene["scene_number"]
-            visual = scene.get("visual_description", "") or scene.get("description", "")
-            prebuilt = scene.get("image_prompt", "")
-            progress = 78 + int((i / max(total, 1)) * 10)
+            progress = 78 + int((i / max(total, 1)) * 17)
 
-            # 构建 image prompt：优先用 LLM 生成的英文 prompt
-            if prebuilt and prebuilt.strip():
-                prompt = prebuilt
-            elif visual and visual.strip():
-                try:
-                    prompt = await asyncio.wait_for(
-                        prompt_builder.build_image_prompt(visual),
-                        timeout=30,
-                    )
-                except (asyncio.TimeoutError, Exception):
-                    # prompt 构建失败时用中文 visual 做兜底
-                    prompt = visual[:500]
-            else:
-                prompt = "cinematic scene, dramatic lighting, 4K, high quality"
+            # 构建 MiniMax prompt：视觉描述 + Sound: 音频描述
+            visual = scene.get("visual_description", "") or scene.get("description", "")
+            camera = scene.get("camera_movement", "")
+            dialogue = scene.get("dialogue", "")
+            location = scene.get("location", "")
+            time_of_day = scene.get("time_of_day", "")
+
+            sound_clause = ""
+            if dialogue:
+                # 取前两行对话作为 Sound 提示
+                lines = dialogue.strip().split("\n")[:2]
+                sound_clause = f"Sound: characters speaking naturally, ambient {location or 'scene'} atmosphere"
+
+            prompt_parts = []
+            if camera:
+                prompt_parts.append(f"Camera: {camera}")
+            if visual:
+                prompt_parts.append(visual[:1500])
+            if sound_clause:
+                prompt_parts.append(sound_clause)
+            prompt = ". ".join(prompt_parts)[:2000]
 
             # 重试循环
             for retry in range(MAX_RETRIES + 1):
                 asset = self._create_media_asset(
-                    task_id, "image", scene_num, prompt
+                    task_id, "video", scene_num, prompt
                 )
                 try:
                     path = await asyncio.wait_for(
-                        wanx_service.generate_image(task_id, scene_num, prompt),
-                        timeout=180,
+                        minimax_service.generate_video(task_id, scene_num, prompt),
+                        timeout=300,
                     )
-                    image_paths.append(path)
+                    video_paths.append(path)
                     self._update_media_asset(asset.id, "success", file_path=path)
-                    logger.info(f"[{task_id}] 分镜{scene_num} 图片生成成功")
+                    logger.info(f"[{task_id}] 分镜{scene_num} 视频生成成功")
                     break
                 except asyncio.TimeoutError:
                     logger.warning(
-                        f"[{task_id}] 分镜{scene_num} 图片生成超时"
+                        f"[{task_id}] 分镜{scene_num} 视频生成超时"
                         + (f" (重试 {retry+1}/{MAX_RETRIES})" if retry < MAX_RETRIES else "")
                     )
                     self._update_media_asset(asset.id, "failed", error="生成超时")
                 except Exception as e:
                     logger.warning(
-                        f"[{task_id}] 分镜{scene_num} 图片生成失败: {e}"
+                        f"[{task_id}] 分镜{scene_num} 视频生成失败: {e}"
                         + (f" (重试 {retry+1}/{MAX_RETRIES})" if retry < MAX_RETRIES else "")
                     )
                     self._update_media_asset(asset.id, "failed", error=str(e)[:500])
@@ -435,151 +421,44 @@ class TaskManager:
 
             self._update_status(task_id, "running", progress=progress)
 
-        self._update_status(task_id, "running", progress=88)
-        logger.info(
-            f"[{task_id}] 图片生成完成: {len(image_paths)}/{total} 成功"
-        )
-        return image_paths
-
-    async def _run_video_generation(
-        self, task_id: str, scene_list: list[dict], image_paths: list[str]
-    ) -> list[str]:
-        """
-        阶段6：图生视频（Seedance 1.5 Pro）。
-        返回: 本地视频路径列表
-        """
-        if not image_paths:
-            logger.warning(f"[{task_id}] 无可用图片，跳过视频生成")
-            return []
-
-        logger.info(f"[{task_id}] 阶段6: 图生视频 ({len(image_paths)} 段)")
-        self._update_status(task_id, "running", progress=89)
-
-        video_paths = []
-        total = len(image_paths)
-
-        for i, (img_path, scene) in enumerate(
-            zip(image_paths, scene_list[: len(image_paths)])
-        ):
-            scene_num = scene["scene_number"]
-            progress = 89 + int((i / max(total, 1)) * 5)
-
-            # 使用场景的运镜和画面描述生成针对性视频 prompt
-            camera = scene.get("camera_movement", "")
-            visual = scene.get("visual_description", "")
-            action_prompt = (
-                f"{camera + '. ' if camera else ''}"
-                f"{visual[:200] + '. ' if visual else ''}"
-                f"cinematic motion, smooth movement, professional lighting"
-            )
-
-            asset = self._create_media_asset(
-                task_id, "video", scene_num, action_prompt
-            )
-
-            try:
-                path = await seedance_service.generate_video(
-                    task_id, scene_num, img_path, action_prompt
-                )
-                video_paths.append(path)
-                self._update_media_asset(asset.id, "success", file_path=path)
-            except Exception as e:
-                logger.warning(f"[{task_id}] 分镜{scene_num} 视频生成失败: {e}")
-                self._update_media_asset(
-                    asset.id, "failed", error=str(e)[:500]
-                )
-
-            self._update_status(task_id, "running", progress=progress)
-
-        self._update_status(task_id, "running", progress=94)
-        logger.info(
-            f"[{task_id}] 视频生成完成: {len(video_paths)}/{total} 成功"
-        )
-        return video_paths
-
-    async def _run_tts_generation(
-        self, task_id: str, character_list: list[dict]
-    ) -> list[str]:
-        """
-        阶段7：角色配音（Volcengine TTS）。
-        为每个角色合成一段示例语音。
-        """
-        logger.info(f"[{task_id}] 阶段7: 角色配音 ({len(character_list)} 个角色)")
         self._update_status(task_id, "running", progress=95)
-
-        audio_paths = []
-        total = len(character_list)
-
-        for i, char in enumerate(character_list):
-            char_name = char["name"]
-            # 从角色描述中提取可能的台词片段
-            desc = char.get("description", "")
-            sample_text = self._extract_dialogue_sample(char_name, desc)
-
-            if not sample_text:
-                continue
-
-            progress = 95 + int((i / max(total, 1)) * 2)
-
-            asset = self._create_media_asset(
-                task_id, "audio", None, sample_text, char_name
-            )
-
-            try:
-                path = await tts_service.synthesize(
-                    task_id, char_name, sample_text
-                )
-                audio_paths.append(path)
-                self._update_media_asset(asset.id, "success", file_path=path)
-            except Exception as e:
-                logger.warning(f"[{task_id}] 角色 {char_name} TTS 失败: {e}")
-                self._update_media_asset(
-                    asset.id, "failed", error=str(e)[:500]
-                )
-
-            self._update_status(task_id, "running", progress=progress)
-
-        self._update_status(task_id, "running", progress=97)
-        logger.info(
-            f"[{task_id}] 配音完成: {len(audio_paths)}/{total} 成功"
-        )
-        return audio_paths
+        logger.info(f"[{task_id}] 视频生成完成: {len(video_paths)}/{total} 成功")
+        return video_paths
 
     async def _run_composite(
         self,
         task_id: str,
         video_paths: list[str],
-        audio_paths: list[str],
+        audio_paths: list[str] | None,
         scene_list: list[dict],
         character_list: list[dict],
     ) -> None:
         """
-        阶段8：字幕合成（FFmpeg）。
-        拼接视频 + 音频 + 生成 SRT 字幕 → 最终 MP4。
+        阶段6：视频拼接 + SRT 字幕 (FFmpeg)。
+        MiniMax-H3 已含音频，无需额外配音轨。
         """
         if not video_paths:
-            logger.warning(f"[{task_id}] 无可用视频，跳过合成")
+            logger.warning(f"[{task_id}] 无可用视频，跳过拼接")
             return
 
-        logger.info(f"[{task_id}] 阶段8: 字幕合成")
-        self._update_status(task_id, "running", progress=98)
+        logger.info(f"[{task_id}] 阶段6: FFmpeg 视频拼接")
+        self._update_status(task_id, "running", progress=97)
 
-        # 生成字幕数据
         subtitle_data = self._build_subtitles(
             scene_list, character_list, len(video_paths)
         )
 
         asset = self._create_media_asset(
-            task_id, "composite", None, "final composite"
+            task_id, "composite", None, "final composite (MiniMax-H3)"
         )
 
         try:
             output_path = await video_composer.composite(
-                task_id, video_paths, audio_paths, subtitle_data
+                task_id, video_paths, audio_paths or [], subtitle_data
             )
             self._update_media_asset(asset.id, "success", file_path=output_path)
         except Exception as e:
-            logger.warning(f"[{task_id}] 视频合成失败: {e}")
+            logger.warning(f"[{task_id}] 视频拼接失败: {e}")
             self._update_media_asset(asset.id, "failed", error=str(e)[:500])
 
         self._update_status(task_id, "running", progress=99)

@@ -36,26 +36,14 @@ class Settings(BaseSettings):
     upload_dir: str = "uploads"
     max_upload_size: int = 10 * 1024 * 1024
 
-    # ── DashScope (Wan-X-Turbo 分镜图片生成) ──
-    dashscope_api_key: str = ""
-    dashscope_image_model: str = "wanx2.1-t2i-turbo"
-    dashscope_image_size: str = "1280*720"
-    dashscope_poll_interval: int = 3      # 轮询间隔（秒）
-    dashscope_poll_max_retries: int = 40  # 最大轮询次数（约 2 分钟）
-
-    # ── fal.ai (Seedance 1.5 Pro 图生视频) ──
-    fal_key: str = ""
-    fal_video_model: str = "fal-ai/bytedance/seedance/v1.5/pro/image-to-video"
-    fal_video_duration: int = 5           # 视频时长（秒）
-    fal_video_resolution: str = "720p"
-    fal_poll_interval: int = 5
-    fal_poll_max_retries: int = 60        # 约 5 分钟
-
-    # ── Volcengine TTS (火山引擎角色配音) ──
-    volc_access_key: str = ""
-    volc_secret_key: str = ""
-    volc_tts_voice_type: str = "BV700_streaming"  # 默认音色
-    volc_tts_encoding: str = "mp3"
+    # ── MiniMax-H3 (文生视频，含内置音频) ──
+    minimax_api_key: str = ""
+    minimax_model: str = "MiniMax-H3"
+    minimax_video_duration: int = 6       # 每分镜视频时长（秒，4-15）
+    minimax_video_ratio: str = "16:9"
+    minimax_video_resolution: str = "2K"
+    minimax_poll_interval: int = 5        # 轮询间隔（秒）
+    minimax_poll_max_retries: int = 60    # 约 5 分钟
 
     # ── FFmpeg 字幕拼接 ──
     ffmpeg_path: str = "ffmpeg"

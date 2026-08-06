@@ -80,12 +80,12 @@ async def trigger_media_generation(task_id: str):
 
 
 async def _run_generation(task_id: str, scene_list: list[dict]):
-    """后台执行图片生成"""
+    """后台执行 MiniMax-H3 视频生成"""
     try:
-        await task_manager._run_image_generation(task_id, scene_list)
-        logger.info(f"[{task_id}] 图片生成完成")
+        await task_manager._run_storyboard_to_video(task_id, scene_list)
+        logger.info(f"[{task_id}] MiniMax 视频生成完成")
     except Exception as e:
-        logger.exception(f"[{task_id}] 图片生成失败: {e}")
+        logger.exception(f"[{task_id}] MiniMax 视频生成失败: {e}")
 
 
 def _get_task_or_404(task_id: str, db: Session) -> Task:
@@ -124,10 +124,8 @@ def get_pipeline_progress(task_id: str, db: Session = Depends(get_db)):
         {"stage": 2, "label": "剧本大纲", "status": "success" if task.progress >= 45 else ("running" if task.progress >= 25 else "pending"), "progress": min(max(task.progress - 20, 0), 25), "assets_count": 0},
         {"stage": 3, "label": "人物角色", "status": "success" if task.progress >= 70 else ("running" if task.progress >= 50 else "pending"), "progress": min(max(task.progress - 45, 0), 25), "assets_count": 0},
         {"stage": 4, "label": "分镜脚本", "status": "success" if task.progress >= 78 else ("running" if task.progress >= 70 else "pending"), "progress": min(max(task.progress - 70, 0), 8), "assets_count": 0},
-        {"stage": 5, "label": "分镜图片", "status": "success" if img_total > 0 and img_ok == img_total else ("running" if img_total > 0 else "pending"), "progress": 0, "assets_count": img_ok},
-        {"stage": 6, "label": "图生视频", "status": "success" if vid_total > 0 and vid_ok == vid_total else ("running" if vid_total > 0 else "pending"), "progress": 0, "assets_count": vid_ok},
-        {"stage": 7, "label": "角色配音", "status": "success" if aud_total > 0 and aud_ok == aud_total else ("running" if aud_total > 0 else "pending"), "progress": 0, "assets_count": aud_ok},
-        {"stage": 8, "label": "字幕合成", "status": "success" if comp_ok > 0 else ("running" if comp_total > 0 else "pending"), "progress": 0, "assets_count": comp_ok},
+        {"stage": 5, "label": "MiniMax 视频", "status": "success" if vid_total > 0 and vid_ok == vid_total else ("running" if vid_total > 0 else "pending"), "progress": 0, "assets_count": vid_ok},
+        {"stage": 6, "label": "视频拼接", "status": "success" if comp_ok > 0 else ("running" if comp_total > 0 else "pending"), "progress": 0, "assets_count": comp_ok},
     ]
 
     return PipelineProgressResponse(
