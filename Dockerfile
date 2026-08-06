@@ -7,6 +7,9 @@
 # ─────────────────── 阶段 1: 前端构建 ───────────────────
 FROM node:20-alpine AS frontend-build
 
+# 使用国内 npm 镜像加速
+RUN npm config set registry https://registry.npmmirror.com
+
 WORKDIR /frontend
 COPY frontend/package.json frontend/package-lock.json* ./
 RUN npm ci --silent 2>/dev/null || npm install --silent
@@ -28,9 +31,9 @@ RUN apt-get update -qq && \
     apt-get install -y -qq --no-install-recommends curl && \
     rm -rf /var/lib/apt/lists/*
 
-# 安装 Python 依赖
+# 安装 Python 依赖（阿里云 pip 镜像加速）
 COPY backend/requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+RUN pip install --no-cache-dir -r requirements.txt -i https://mirrors.aliyun.com/pypi/simple/ --trusted-host mirrors.aliyun.com
 
 # 复制后端代码
 COPY backend/ .
