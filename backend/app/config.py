@@ -6,9 +6,14 @@ from pydantic_settings import BaseSettings
 
 
 class Settings(BaseSettings):
-    # Claude API
+    # ── LLM 通用配置 ──
+    llm_provider: str = "deepseek"              # anthropic | deepseek
     anthropic_api_key: str = ""
+    anthropic_base_url: str = ""
     anthropic_model: str = "claude-sonnet-5-20250915"
+    deepseek_api_key: str = ""
+    deepseek_base_url: str = "https://api.deepseek.com"
+    deepseek_model: str = "deepseek-chat"
     llm_max_retries: int = 2
     llm_retry_base_delay: float = 2.0
     llm_call_timeout: int = 120
