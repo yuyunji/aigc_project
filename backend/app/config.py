@@ -58,6 +58,7 @@ class Settings(BaseSettings):
     class Config:
         env_file = ".env"
         env_file_encoding = "utf-8"
+        extra = "ignore"  # 忽略 .env 中未定义的多余字段
 
 
 # 全局单例配置
