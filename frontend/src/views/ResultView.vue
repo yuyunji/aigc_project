@@ -153,8 +153,14 @@ function pollUntilDone(pollCount = 0) {
   }, 3000);
 }
 
-async function onGenerateImage(sn) { try { await generateSceneImage(selectedTaskId.value, sn); ElMessage.success(`分镜${sn} 图片生成已启动`); pollUntilDone(); } catch(e){} }
-async function onGenerateVideo(sn) { try { await generateSceneVideo(selectedTaskId.value, sn); ElMessage.success(`分镜${sn} 视频生成已启动`); pollUntilDone(); } catch(e){} }
+async function onGenerateImage(sn) {
+  const provider = localStorage.getItem("aigc_image_provider") || "minimax";
+  try { await generateSceneImage(selectedTaskId.value, sn, provider); ElMessage.success(`分镜${sn} 图片生成已启动`); pollUntilDone(); } catch(e){}
+}
+async function onGenerateVideo(sn) {
+  const provider = localStorage.getItem("aigc_video_provider") || "minimax-h3";
+  try { await generateSceneVideo(selectedTaskId.value, sn, provider); ElMessage.success(`分镜${sn} 视频生成已启动`); pollUntilDone(); } catch(e){}
+}
 async function onRetryScene(sn) { try { await retryScene(selectedTaskId.value, sn); ElMessage.success(`分镜${sn} 已重置`); await loadResults(selectedTaskId.value); } catch(e){} }
 
 onMounted(() => loadCompletedTasks());

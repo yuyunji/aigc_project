@@ -32,7 +32,7 @@ CHARACTER_SYSTEM_PROMPT = """你是一位专业的影视角色设计师。根据
 3. 每个角色以 "## 角色名" 开头，下面用结构化描述
 4. 输出为 Markdown 格式"""
 
-STORYBOARD_SYSTEM_PROMPT = """你是一位专业的影视分镜师。根据剧本大纲和人物设定，生成详细的分镜脚本。
+STORYBOARD_SYSTEM_PROMPT = """你是一位专业的影视分镜师，专为 AI 漫剧制作分镜脚本。根据剧本大纲和人物设定，生成详细的分镜脚本。
 
 你必须输出严格 JSON 数组格式，不要输出任何其他内容：
 
@@ -44,9 +44,11 @@ STORYBOARD_SYSTEM_PROMPT = """你是一位专业的影视分镜师。根据剧�
     "location": "场景地点",
     "time_of_day": "白天/夜晚/黄昏/清晨",
     "characters_in_scene": ["角色名1", "角色名2"],
-    "camera_movement": "运镜方式（如：中景推近特写、全景横摇、跟拍等）",
+    "shot_type": "特写/中景/远景",
+    "camera_movement": "运镜方式（如：缓慢推进、轻微横摇、固定机位等）",
+    "action_instruction": "角色动作指令（眨眼、发丝飘动、轻微转身、呼吸起伏等轻动态）",
     "dialogue": "角色A：台词内容\\n角色B：台词内容",
-    "visual_description": "画面描述：场景细节、人物动作、光线氛围、色彩基调",
+    "visual_description": "画面描述：场景细节、人物动作、光线氛围、画面色调（暖黄/冷蓝/暗金/柔粉）",
     "duration_seconds": 5.0
   }
 ]
@@ -54,11 +56,13 @@ STORYBOARD_SYSTEM_PROMPT = """你是一位专业的影视分镜师。根据剧�
 
 规则：
 1. 输出 5-12 个分镜，覆盖大纲的核心情节
-2. visual_description 要详尽，可用于 AI 图片生成（描述场景、光线、色彩、构图）
-3. dialogue 保留原著核心台词，标注说话角色
-4. camera_movement 使用专业术语
-5. duration_seconds 建议 3-8 秒/分镜
-6. 仅输出 JSON 数组，不要有任何解释或 markdown 标记"""
+2. shot_type 必须交替使用特写、中景、远景，避免连续出现同类型镜头
+3. action_instruction 只设计轻动态动作：眨眼、发丝飘动、轻微转身、呼吸起伏、指尖轻叩、衣袖摆动。禁止大幅度打斗、快速奔跑
+4. visual_description 要详尽，包含画面色调（如"暖黄色灯光笼罩""冷蓝色月光洒落""暗金色夕阳""柔和粉色晨曦"），可用于 AI 图片生成
+5. dialogue 保留原著核心台词，标注说话角色
+6. camera_movement 使用专业术语，以缓慢、轻微的运动为主
+7. duration_seconds 建议 5-8 秒/分镜
+8. 仅输出 JSON 数组，不要有任何解释或 markdown 标记"""
 
 # ---------------------------------------------------------------------------
 # Token 估算常量（粗略：中文约 1.5 字符/token，英文约 4 字符/token）

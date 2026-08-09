@@ -40,8 +40,9 @@ class Settings(BaseSettings):
     minimax_api_key: str = ""
     minimax_model: str = "MiniMax-H3"
     minimax_video_duration: int = 6       # 每分镜视频时长（秒，4-15）
-    minimax_video_ratio: str = "16:9"
+    minimax_video_ratio: str = "16:9"     # 16:9 横屏 / 9:16 竖屏
     minimax_video_resolution: str = "2K"
+    minimax_motion_strength: float = 0.3  # 运动强度 0.25-0.4，漫剧轻动态推荐值
     minimax_poll_interval: int = 5        # 轮询间隔（秒）
     minimax_poll_max_retries: int = 60    # 约 5 分钟
 
@@ -49,6 +50,22 @@ class Settings(BaseSettings):
     image_model: str = "image-01"
     image_aspect_ratio: str = "16:9"
     image_style: str = ""  # 全局风格 prompt 前缀，如 "Japanese anime style, manga art"
+
+    # ── 图片生成 Provider 选择 ──
+    image_provider: str = "minimax"         # minimax | gpt-image-2
+
+    # ── OpenAI GPT-Image-2 ──
+    openai_api_key: str = ""
+    openai_base_url: str = "https://api.openai.com/v1"
+    openai_image_model: str = "gpt-image-2"
+    openai_image_size: str = "1792x1024"    # 16:9 宽幅
+    openai_image_quality: str = "high"       # standard | high
+
+    # ── 视频生成 Provider 选择 ──
+    video_provider: str = "minimax-h3"      # minimax-h3（目前仅此选项）
+
+    # ── 导演流程图 ──
+    enable_storyboard_flowchart: bool = True  # 是否启用 GPT-Image-2 导演流程图生成
 
     # ── FFmpeg 字幕拼接 ──
     ffmpeg_path: str = "ffmpeg"

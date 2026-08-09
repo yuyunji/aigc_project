@@ -43,6 +43,26 @@ class MiniMaxImageService:
         local_path = await self._download_ref(task_id, character_name, image_url)
         return local_path, image_url
 
+    async def generate_character_portrait_side(
+        self, task_id: str, character_name: str, appearance_prompt: str
+    ) -> tuple[str, str]:
+        """
+        生成角色侧面定妆照（侧面半身，保持与正面一致的服装和五官特征）。
+        返回 (本地文件路径, MiniMax原始URL)。
+        """
+        prompt = (
+            f"{settings.image_style or ''}. "
+            f"Side profile portrait of {character_name}: {appearance_prompt}. "
+            "Side view, half-body, same outfit and hairstyle as front view, "
+            "clean simple background, clear facial profile, character design sheet, high quality"
+        )
+        image_url = await self._generate(prompt)
+        logger.info(f"[{task_id}] 角色侧面定妆照已生成: {character_name}")
+
+        # 保存为 {name}_side.png，缓存 URL 为 {name}_side.url
+        local_path = await self._download_ref_side(task_id, character_name, image_url)
+        return local_path, image_url
+
     async def generate_image(
         self,
         task_id: str,
@@ -103,11 +123,27 @@ class MiniMaxImageService:
     async def _download_ref(
         self, task_id: str, character_name: str, image_url: str
     ) -> str:
-        """下载角色定妆照到 media/{task_id}/characters/"""
+        """下载角色正面定妆照到 media/{task_id}/characters/{name}.png"""
         output_dir = os.path.join(self.media_dir, task_id, "characters")
         os.makedirs(output_dir, exist_ok=True)
         safe_name = character_name.replace("/", "_").replace("\\", "_")[:50]
         filepath = os.path.join(output_dir, f"{safe_name}.png")
+
+        async with httpx.AsyncClient(timeout=60) as client:
+            resp = await client.get(image_url)
+            resp.raise_for_status()
+        with open(filepath, "wb") as f:
+            f.write(resp.content)
+        return filepath
+
+    async def _download_ref_side(
+        self, task_id: str, character_name: str, image_url: str
+    ) -> str:
+        """下载角色侧面定妆照到 media/{task_id}/characters/{name}_side.png"""
+        output_dir = os.path.join(self.media_dir, task_id, "characters")
+        os.makedirs(output_dir, exist_ok=True)
+        safe_name = character_name.replace("/", "_").replace("\\", "_")[:50]
+        filepath = os.path.join(output_dir, f"{safe_name}_side.png")
 
         async with httpx.AsyncClient(timeout=60) as client:
             resp = await client.get(image_url)

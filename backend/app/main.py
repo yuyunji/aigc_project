@@ -3,7 +3,9 @@ FastAPI 应用入口
 挂载路由、配置 CORS、注册异常处理、管理生命周期事件
 """
 import logging
+import logging.handlers
 import os
+import sys
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException
@@ -17,12 +19,49 @@ from app.routers import upload, task, result, media
 from app.services.task_queue import task_queue
 from app.utils.exceptions import register_exception_handlers
 
-# 日志配置
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+# ── 日志配置 ──
+LOG_DIR = "logs"
+os.makedirs(LOG_DIR, exist_ok=True)
+
+# 根 logger
+root_logger = logging.getLogger()
+root_logger.setLevel(logging.DEBUG)
+
+# 格式
+formatter = logging.Formatter(
+    "%(asctime)s [%(levelname)-7s] %(name)s: %(message)s",
     datefmt="%Y-%m-%d %H:%M:%S",
 )
+
+# 控制台 handler（INFO 以上，UTF-8 编码）
+sys.stdout.reconfigure(encoding="utf-8")
+console = logging.StreamHandler(sys.stdout)
+console.setLevel(logging.INFO)
+console.setFormatter(formatter)
+root_logger.addHandler(console)
+
+# 全量日志文件（DEBUG 以上，轮转 5MB × 5 个）
+all_log = logging.handlers.RotatingFileHandler(
+    os.path.join(LOG_DIR, "app.log"),
+    maxBytes=5 * 1024 * 1024,
+    backupCount=5,
+    encoding="utf-8",
+)
+all_log.setLevel(logging.DEBUG)
+all_log.setFormatter(formatter)
+root_logger.addHandler(all_log)
+
+# 错误日志文件（WARNING 以上，单独记录）
+err_log = logging.handlers.RotatingFileHandler(
+    os.path.join(LOG_DIR, "error.log"),
+    maxBytes=2 * 1024 * 1024,
+    backupCount=3,
+    encoding="utf-8",
+)
+err_log.setLevel(logging.WARNING)
+err_log.setFormatter(formatter)
+root_logger.addHandler(err_log)
+
 logger = logging.getLogger(__name__)
 
 

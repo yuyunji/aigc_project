@@ -24,6 +24,7 @@ class MiniMaxService:
         self.duration = settings.minimax_video_duration
         self.ratio = settings.minimax_video_ratio
         self.resolution = settings.minimax_video_resolution
+        self.motion_strength = settings.minimax_motion_strength
         self.poll_interval = settings.minimax_poll_interval
         self.poll_max = settings.minimax_poll_max_retries
         self.media_dir = settings.media_dir
@@ -71,6 +72,7 @@ class MiniMaxService:
             "duration": self.duration,
             "ratio": self.ratio,
             "resolution": self.resolution,
+            "motion_strength": self.motion_strength,
         }
 
         async with httpx.AsyncClient(timeout=30) as client:

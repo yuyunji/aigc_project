@@ -22,6 +22,7 @@ from app.schemas.media import (
     PipelineProgressResponse,
 )
 from app.services.task_manager import task_manager
+from app.config import settings
 
 logger = logging.getLogger(__name__)
 
@@ -64,6 +65,69 @@ async def retry_scene(task_id: str, scene_number: int):
         return {"status": "reset", "count": count}
     finally:
         db.close()
+
+
+@router.post("/{task_id}/flowchart")
+async def generate_flowchart(task_id: str):
+    """使用 GPT-Image-2 生成导演流程图（所有分镜合成一张视觉规划图）"""
+    db = SessionLocal()
+    try:
+        task = db.query(Task).filter(Task.id == task_id).first()
+        if not task:
+            raise HTTPException(status_code=404, detail=f"任务 {task_id} 不存在")
+
+        scenes = (
+            db.query(Storyboard)
+            .filter(Storyboard.task_id == task_id)
+            .order_by(Storyboard.scene_number.asc())
+            .all()
+        )
+        if not scenes:
+            raise HTTPException(status_code=400, detail="该任务尚无分镜，请先生成分镜脚本")
+
+        scene_list = [
+            {
+                "scene_number": s.scene_number,
+                "scene_title": s.scene_title or "",
+                "location": s.location or "",
+                "time_of_day": s.time_of_day or "",
+                "characters_in_scene": s.characters_in_scene or "",
+                "camera_movement": s.camera_movement or "",
+                "visual_description": s.visual_description or s.description or "",
+            }
+            for s in scenes
+        ]
+
+        asyncio.create_task(_run_flowchart(task_id, scene_list))
+        return {"status": "started", "task_id": task_id, "scene_count": len(scene_list)}
+    finally:
+        db.close()
+
+
+@router.get("/{task_id}/flowchart")
+def get_flowchart(task_id: str, db: Session = Depends(get_db)):
+    """获取导演流程图"""
+    _get_task_or_404(task_id, db)
+    asset = (
+        db.query(MediaAsset)
+        .filter(
+            MediaAsset.task_id == task_id,
+            MediaAsset.asset_type == "flowchart",
+        )
+        .order_by(MediaAsset.created_at.desc())
+        .first()
+    )
+    if not asset:
+        return None
+    return MediaAssetResponse.model_validate(asset)
+
+
+async def _run_flowchart(task_id: str, scene_list: list[dict]):
+    """后台执行导演流程图生成"""
+    try:
+        await task_manager.generate_storyboard_flowchart(task_id, scene_list)
+    except Exception as e:
+        logger.exception(f"[{task_id}] flowchart generation: {e}")
 
 
 def _get_scene_or_404(task_id: str, scene_number: int) -> dict:
@@ -143,15 +207,26 @@ def get_pipeline_progress(task_id: str, db: Session = Depends(get_db)):
     vid_total, vid_ok = count_by_type("video")
     aud_total, aud_ok = count_by_type("audio")
     comp_total, comp_ok = count_by_type("composite")
+    flow_total, flow_ok = count_by_type("flowchart")
+
+    # Provider 标签
+    img_label = "GPT-Image-2" if settings.image_provider == "gpt-image-2" else "MiniMax image-01"
+    vid_label = "MiniMax-H3"
 
     stages = [
         {"stage": 1, "label": "文本预处理", "status": "success" if task.progress >= 20 else ("running" if task.progress >= 10 else "pending"), "progress": min(task.progress, 20), "assets_count": 0},
         {"stage": 2, "label": "剧本大纲", "status": "success" if task.progress >= 45 else ("running" if task.progress >= 25 else "pending"), "progress": min(max(task.progress - 20, 0), 25), "assets_count": 0},
         {"stage": 3, "label": "人物角色", "status": "success" if task.progress >= 70 else ("running" if task.progress >= 50 else "pending"), "progress": min(max(task.progress - 45, 0), 25), "assets_count": 0},
         {"stage": 4, "label": "分镜脚本", "status": "success" if task.progress >= 78 else ("running" if task.progress >= 70 else "pending"), "progress": min(max(task.progress - 70, 0), 8), "assets_count": 0},
-        {"stage": 5, "label": "MiniMax 视频", "status": "success" if vid_total > 0 and vid_ok == vid_total else ("running" if vid_total > 0 else "pending"), "progress": 0, "assets_count": vid_ok},
-        {"stage": 6, "label": "视频拼接", "status": "success" if comp_ok > 0 else ("running" if comp_total > 0 else "pending"), "progress": 0, "assets_count": comp_ok},
+        {"stage": 5, "label": f"{img_label} 图片", "status": "success" if img_total > 0 and img_ok == img_total else ("running" if img_total > 0 else "pending"), "progress": 0, "assets_count": img_ok},
+        {"stage": 6, "label": f"{vid_label} 视频", "status": "success" if vid_total > 0 and vid_ok == vid_total else ("running" if vid_total > 0 else "pending"), "progress": 0, "assets_count": vid_ok},
+        {"stage": 7, "label": "视频拼接", "status": "success" if comp_ok > 0 else ("running" if comp_total > 0 else "pending"), "progress": 0, "assets_count": comp_ok},
     ]
+
+    if settings.enable_storyboard_flowchart:
+        stages.append(
+            {"stage": 8, "label": "导演流程图", "status": "success" if flow_ok > 0 else ("running" if flow_total > 0 else "pending"), "progress": 0, "assets_count": flow_ok},
+        )
 
     return PipelineProgressResponse(
         task_id=task_id,

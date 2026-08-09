@@ -24,6 +24,7 @@ from app.models.media import MediaAsset
 from app.services.text_processor import TextProcessor
 from app.services.llm_service import llm_service
 from app.services.minimax_service import minimax_service
+from app.services.gpt_image_service import gpt_image_service
 from app.services.video_composer import video_composer
 from app.utils.exceptions import (
     LLMAPIError,
@@ -79,21 +80,29 @@ class TaskManager:
                 timeout=total_timeout,
             )
         except asyncio.TimeoutError:
-            # 总超时
             error_msg = f"任务执行超时（{total_timeout} 秒），请尝试缩短输入文本"
             self._update_status(task_id, "failed", error=error_msg)
-            logger.warning(f"[{task_id}] 任务总超时 ({total_timeout}s)")
+            logger.error(f"[{task_id}] 任务总超时 ({total_timeout}s)")
 
-        except (TokenLimitError, LLMAPIError, InputTooLargeError, EmptyChunksError) as e:
-            # 已知业务异常 → 友好消息
+        except TokenLimitError as e:
             friendly = self._friendly_error(e)
             self._update_status(task_id, "failed", error=friendly)
-            logger.warning(f"[{task_id}] {friendly}")
+            logger.warning(f"[{task_id}] Token 超限: {e}")
+
+        except LLMAPIError as e:
+            friendly = self._friendly_error(e)
+            self._update_status(task_id, "failed", error=friendly)
+            logger.error(f"[{task_id}] AI 服务错误: {e}")
+
+        except (InputTooLargeError, EmptyChunksError) as e:
+            friendly = self._friendly_error(e)
+            self._update_status(task_id, "failed", error=friendly)
+            logger.warning(f"[{task_id}] 输入校验失败: {friendly}")
 
         except Exception as e:
             error_msg = f"未知错误: {str(e)}"
             self._update_status(task_id, "failed", error=error_msg)
-            logger.exception(f"[{task_id}] 未知错误")
+            logger.exception(f"[{task_id}] 未预期错误")
 
     async def _run_pipeline(self, task_id: str, source_text: str) -> None:
         """执行实际级联流水线（内部方法，由 process_task 超时包装调用）"""
@@ -173,7 +182,7 @@ class TaskManager:
 
         self._save_storyboards(task_id, scene_list)
 
-        # ── 阶段 5-6：媒体链路（MiniMax-H3 文生视频 + FFmpeg 拼接） ──
+        # ── 阶段 5-6：媒体链路（文生视频/图生视频 + FFmpeg 拼接）──
         video_paths = []
         if settings.auto_media_pipeline:
             video_paths = await self._run_storyboard_to_video(task_id, scene_list)
@@ -308,7 +317,9 @@ class TaskManager:
                     "location": str(scene.get("location", "")),
                     "time_of_day": str(scene.get("time_of_day", "")),
                     "characters_in_scene": chars,
+                    "shot_type": str(scene.get("shot_type", "")),
                     "camera_movement": str(scene.get("camera_movement", "")),
+                    "action_instruction": str(scene.get("action_instruction", "")),
                     "dialogue": str(scene.get("dialogue", "")),
                     "visual_description": str(scene.get("visual_description", "")),
                     "image_prompt": str(scene.get("image_prompt", "")),
@@ -374,16 +385,13 @@ class TaskManager:
         return results
 
     # ------------------------------------------------------------------
-    # 阶段 5-6：媒体链路 (MiniMax-H3)
+    # 阶段 5：分镜→视频（MiniMax-H3 文生视频）
     # ------------------------------------------------------------------
 
     async def _run_storyboard_to_video(
         self, task_id: str, scene_list: list[dict]
     ) -> list[str]:
-        """
-        阶段5：分镜→视频 (MiniMax-H3 文生视频，含内置音频)。
-        参考小云雀：每分镜一键生成视频，Prompt 含视觉+音频描述。
-        """
+        """阶段5：MiniMax-H3 文生视频，每分镜一键生成，含内置音频。"""
         total = len(scene_list)
         logger.info(f"[{task_id}] 阶段5: 分镜→视频 MiniMax-H3 ({total} 个分镜)")
         self._update_status(task_id, "running", progress=78)
@@ -395,33 +403,30 @@ class TaskManager:
             scene_num = scene["scene_number"]
             progress = 78 + int((i / max(total, 1)) * 17)
 
-            # 构建 MiniMax prompt：视觉描述 + Sound: 音频描述
+            # 构建 prompt：视觉描述 + 运镜 + 音效描述
             visual = scene.get("visual_description", "") or scene.get("description", "")
             camera = scene.get("camera_movement", "")
+            action = scene.get("action_instruction", "")
             dialogue = scene.get("dialogue", "")
             location = scene.get("location", "")
-            time_of_day = scene.get("time_of_day", "")
 
             sound_clause = ""
             if dialogue:
-                # 取前两行对话作为 Sound 提示
-                lines = dialogue.strip().split("\n")[:2]
                 sound_clause = f"Sound: characters speaking naturally, ambient {location or 'scene'} atmosphere"
 
             prompt_parts = []
             if camera:
                 prompt_parts.append(f"Camera: {camera}")
+            if action:
+                prompt_parts.append(f"Motion: {action}")
             if visual:
                 prompt_parts.append(visual[:1500])
             if sound_clause:
                 prompt_parts.append(sound_clause)
             prompt = ". ".join(prompt_parts)[:2000]
 
-            # 重试循环
             for retry in range(MAX_RETRIES + 1):
-                asset = self._create_media_asset(
-                    task_id, "video", scene_num, prompt
-                )
+                asset = self._create_media_asset(task_id, "video", scene_num, prompt)
                 try:
                     path = await asyncio.wait_for(
                         minimax_service.generate_video(task_id, scene_num, prompt),
@@ -432,16 +437,12 @@ class TaskManager:
                     logger.info(f"[{task_id}] 分镜{scene_num} 视频生成成功")
                     break
                 except asyncio.TimeoutError:
-                    logger.warning(
-                        f"[{task_id}] 分镜{scene_num} 视频生成超时"
-                        + (f" (重试 {retry+1}/{MAX_RETRIES})" if retry < MAX_RETRIES else "")
-                    )
+                    logger.warning(f"[{task_id}] 分镜{scene_num} 视频生成超时"
+                        + (f" (重试 {retry+1}/{MAX_RETRIES})" if retry < MAX_RETRIES else ""))
                     self._update_media_asset(asset.id, "failed", error="生成超时")
                 except Exception as e:
-                    logger.warning(
-                        f"[{task_id}] 分镜{scene_num} 视频生成失败: {e}"
-                        + (f" (重试 {retry+1}/{MAX_RETRIES})" if retry < MAX_RETRIES else "")
-                    )
+                    logger.warning(f"[{task_id}] 分镜{scene_num} 视频生成失败: {e}"
+                        + (f" (重试 {retry+1}/{MAX_RETRIES})" if retry < MAX_RETRIES else ""))
                     self._update_media_asset(asset.id, "failed", error=str(e)[:500])
                     if retry >= MAX_RETRIES:
                         break
@@ -495,7 +496,7 @@ class TaskManager:
     # ------------------------------------------------------------------
 
     async def generate_scene_image(self, task_id: str, scene: dict) -> dict:
-        """为单个分镜生成图片，返回 {status, file_path, error}"""
+        """为单个分镜生成图片，支持 MiniMax image-01 / GPT-Image-2 切换"""
         scene_num = scene["scene_number"]
         visual = scene.get("visual_description", "") or scene.get("description", "")
         prebuilt = scene.get("image_prompt", "")
@@ -507,36 +508,59 @@ class TaskManager:
         else:
             prompt = "cinematic scene, dramatic lighting, 4K, high quality"
 
-        # 全局风格前缀
-        if settings.image_style:
-            prompt = f"{settings.image_style}. {prompt}"
-
-        # 注入出场角色外貌特征，确保跨分镜角色一致性
+        # ── 提取出场角色的外貌特征（GPT-Image-2 / MiniMax 共用）──
         char_appearance = self._get_characters_appearance(
             task_id, scene.get("characters_in_scene", "")
         )
-
-        # 小云雀方案: 为出场角色生成定妆照，传入 subject_reference 锚定角色形象
-        ref_image_url = None
         char_names = self._parse_char_names(scene.get("characters_in_scene", ""))
-        if char_names and char_appearance:
-            ref_image_url = await self._ensure_character_ref(
-                task_id, char_names[0], char_appearance
-            )
-        if ref_image_url:
-            prompt = (
-                f"{prompt}. "
-                f"Keep the character ({char_names[0]}) appearance consistent with the reference image"
-            )
 
         self._cleanup_asset(task_id, scene_num, "image")
         asset = self._create_media_asset(task_id, "image", scene_num, prompt)
+
+        provider = settings.image_provider
+
         try:
-            from app.services.minimax_image_service import minimax_image_service
-            path = await asyncio.wait_for(
-                minimax_image_service.generate_image(task_id, scene_num, prompt, ref_image_url),
-                timeout=180,
-            )
+            if provider == "gpt-image-2":
+                # GPT-Image-2: 注入角色外貌到 prompt → 翻译英文 → 发送
+                prompt_parts = []
+                if settings.image_style:
+                    prompt_parts.append(f"Style: {settings.image_style}")
+                if char_appearance:
+                    prompt_parts.append(
+                        f"Character appearances (MUST keep consistent across all scenes):\n{char_appearance}"
+                    )
+                prompt_parts.append(f"Scene description: {prompt}")
+                full_prompt = "\n\n".join(prompt_parts)
+
+                from app.services.prompt_builder import prompt_builder
+                try:
+                    english_prompt = await prompt_builder.build_image_prompt(full_prompt)
+                except Exception:
+                    english_prompt = full_prompt
+                path = await asyncio.wait_for(
+                    gpt_image_service.generate_scene_image(task_id, scene_num, english_prompt),
+                    timeout=180,
+                )
+            else:
+                # MiniMax image-01（默认）: subject_reference 图像锚定方案
+                if settings.image_style:
+                    prompt = f"{settings.image_style}. {prompt}"
+                ref_image_url = None
+                if char_names and char_appearance:
+                    ref_image_url = await self._ensure_character_ref(
+                        task_id, char_names[0], char_appearance
+                    )
+                if ref_image_url:
+                    prompt = (
+                        f"{prompt}. "
+                        f"Keep the character ({char_names[0]}) appearance consistent with the reference image"
+                    )
+                from app.services.minimax_image_service import minimax_image_service
+                path = await asyncio.wait_for(
+                    minimax_image_service.generate_image(task_id, scene_num, prompt, ref_image_url),
+                    timeout=180,
+                )
+
             self._update_media_asset(asset.id, "success", file_path=path)
             return {"status": "success", "file_path": path, "asset_id": asset.id}
         except asyncio.TimeoutError:
@@ -548,13 +572,17 @@ class TaskManager:
             return {"status": "failed", "error": err}
 
     async def generate_scene_video(self, task_id: str, scene: dict) -> dict:
-        """为单个分镜生成视频 (MiniMax-H3)，返回 {status, file_path, error}"""
+        """为单个分镜生成视频（MiniMax-H3 文生视频，含内置音频）"""
         scene_num = scene["scene_number"]
         visual = scene.get("visual_description", "") or scene.get("description", "")
         camera = scene.get("camera_movement", "")
+        action = scene.get("action_instruction", "")
         dialogue = scene.get("dialogue", "")
         location = scene.get("location", "")
 
+        self._cleanup_asset(task_id, scene_num, "video")
+
+        # 构造 prompt
         sound = ""
         if dialogue:
             sound = f"Sound: characters speaking naturally, ambient {location or 'scene'} atmosphere"
@@ -562,13 +590,14 @@ class TaskManager:
         parts = []
         if camera:
             parts.append(f"Camera: {camera}")
+        if action:
+            parts.append(f"Motion: {action}")
         if visual:
             parts.append(visual[:1500])
         if sound:
             parts.append(sound)
         prompt = ". ".join(parts)[:2000]
 
-        self._cleanup_asset(task_id, scene_num, "video")
         asset = self._create_media_asset(task_id, "video", scene_num, prompt)
         try:
             path = await asyncio.wait_for(
@@ -590,19 +619,17 @@ class TaskManager:
     # ------------------------------------------------------------------
 
     @staticmethod
-    def _cleanup_asset(task_id: str, scene_number: int, asset_type: str) -> int:
+    def _cleanup_asset(task_id: str, scene_number: int | None, asset_type: str) -> int:
         """删除同分镜同类型的旧记录，防止标签堆积"""
         db = SessionLocal()
         try:
-            stale = (
-                db.query(MediaAsset)
-                .filter(
-                    MediaAsset.task_id == task_id,
-                    MediaAsset.scene_number == scene_number,
-                    MediaAsset.asset_type == asset_type,
-                )
-                .all()
-            )
+            filters = [
+                MediaAsset.task_id == task_id,
+                MediaAsset.asset_type == asset_type,
+            ]
+            if scene_number is not None:
+                filters.append(MediaAsset.scene_number == scene_number)
+            stale = db.query(MediaAsset).filter(*filters).all()
             count = len(stale)
             for a in stale:
                 db.delete(a)
@@ -666,15 +693,47 @@ class TaskManager:
         names = re.split(r"[,，、]+", characters_in_scene)
         return [n.strip() for n in names if n.strip()]
 
+    async def generate_storyboard_flowchart(
+        self, task_id: str, scene_list: list[dict]
+    ) -> dict:
+        """
+        使用 GPT-Image-2 生成导演流程图 —— 所有分镜合成一张视觉规划图。
+        返回 {status, file_path, error}
+        """
+        if settings.image_provider != "gpt-image-2":
+            return {
+                "status": "failed",
+                "error": "导演流程图需要 GPT-Image-2，请在 .env 中设置 IMAGE_PROVIDER=gpt-image-2",
+            }
+
+        logger.info(f"[{task_id}] 生成导演流程图 ({len(scene_list)} 个分镜)")
+
+        self._cleanup_asset(task_id, None, "flowchart")
+        asset = self._create_media_asset(task_id, "flowchart", None, "director storyboard flowchart")
+
+        try:
+            path = await asyncio.wait_for(
+                gpt_image_service.generate_storyboard_flowchart(task_id, scene_list),
+                timeout=300,
+            )
+            self._update_media_asset(asset.id, "success", file_path=path)
+            return {"status": "success", "file_path": path, "asset_id": asset.id}
+        except asyncio.TimeoutError:
+            self._update_media_asset(asset.id, "failed", error="流程图生成超时（300s）")
+            return {"status": "failed", "error": "流程图生成超时，请重试"}
+        except Exception as e:
+            err = str(e)[:500]
+            self._update_media_asset(asset.id, "failed", error=err)
+            return {"status": "failed", "error": err}
+
     @staticmethod
     async def _ensure_character_ref(
         task_id: str, char_name: str, char_appearance: str
     ) -> str | None:
         """
-        小云雀服化道Agent：确保角色有定妆参考图。
-        已存在则返回本地路径，否则调用 MiniMax image-01 生成。
-        同时缓存 HTTPS URL 到 .url 文件，用于 subject_reference。
-        返回 HTTPS URL（用于 API subject_reference）或 None。
+        小云雀服化道Agent：确保角色有定妆参考图（正面+侧面 2 张）。
+        已存在则返回缓存 URL，否则调用 MiniMax image-01 生成。
+        返回正面 HTTPS URL（用于 API subject_reference）或 None。
         """
         from app.services.minimax_image_service import minimax_image_service
         import os
@@ -684,15 +743,16 @@ class TaskManager:
         safe_name = char_name.replace("/", "_").replace("\\", "_")[:50]
         ref_path = os.path.join(ref_dir, f"{safe_name}.png")
         url_path = os.path.join(ref_dir, f"{safe_name}.url")
+        side_ref_path = os.path.join(ref_dir, f"{safe_name}_side.png")
+        side_url_path = os.path.join(ref_dir, f"{safe_name}_side.url")
 
-        # 已存在本地文件且 URL 未过期，直接返回缓存的 URL
+        # 已存在正面 + 侧面缓存 → 直接返回正面 URL
         if os.path.isfile(ref_path) and os.path.isfile(url_path):
             with open(url_path, "r") as uf:
                 cached_url = uf.read().strip()
             if cached_url:
                 return cached_url
         elif os.path.isfile(url_path):
-            # 本地文件丢了但 URL 还在
             with open(url_path, "r") as uf:
                 cached_url = uf.read().strip()
             if cached_url:
@@ -711,14 +771,26 @@ class TaskManager:
             return None
 
         try:
-            # 生成角色定妆照（返回本地路径 + HTTPS URL）
+            # 生成正面定妆照
             local_path, https_url = await minimax_image_service.generate_character_portrait(
                 task_id, char_name, appearance_text
             )
-            # 缓存 HTTPS URL
             with open(url_path, "w") as uf:
                 uf.write(https_url)
-            logger.info(f"[{task_id}] 角色定妆照已生成: {char_name} (URL cached)")
+            logger.info(f"[{task_id}] 角色正面定妆照已生成: {char_name}")
+
+            # 生成侧面定妆照（仅当不存在时）
+            if not os.path.isfile(side_ref_path) or not os.path.isfile(side_url_path):
+                try:
+                    _, side_url = await minimax_image_service.generate_character_portrait_side(
+                        task_id, char_name, appearance_text
+                    )
+                    with open(side_url_path, "w") as uf:
+                        uf.write(side_url)
+                    logger.info(f"[{task_id}] 角色侧面定妆照已生成: {char_name}")
+                except Exception as e:
+                    logger.warning(f"[{task_id}] 角色侧面照生成失败（非致命）: {char_name}: {e}")
+
             return https_url
         except Exception as e:
             logger.warning(f"[{task_id}] 角色参考图生成失败: {char_name}: {e}")

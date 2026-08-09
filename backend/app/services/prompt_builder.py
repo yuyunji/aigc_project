@@ -35,7 +35,7 @@ class PromptBuilder:
         user_message = f"Create an English image generation prompt for this storyboard scene:\n\n{scene_description[:1500]}"
 
         try:
-            result = await llm_service._call_claude(  # noqa: SLF001
+            result = await llm_service._call_llm(
                 system_prompt=IMAGE_PROMPT_SYSTEM,
                 user_message=user_message,
                 max_tokens=300,

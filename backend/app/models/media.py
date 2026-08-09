@@ -12,10 +12,11 @@ from app.database import Base
 class MediaAsset(Base):
     """
     统一媒体资源表，通过 asset_type 区分类型：
-    - image:      分镜图片（Wan-X-Turbo 生成）
-    - video:      图生视频片段（Seedance 生成）
+    - image:      分镜图片（MiniMax image-01 / GPT-Image-2 生成）
+    - video:      视频片段（MiniMax-H3 文生视频 / Seedance 图生视频）
     - audio:      角色配音（Volcengine TTS）
     - composite:  最终合成视频（FFmpeg 拼接）
+    - flowchart:  导演流程图（GPT-Image-2 生成）
     """
     __tablename__ = "media_assets"
 
@@ -26,7 +27,7 @@ class MediaAsset(Base):
         String(36), ForeignKey("tasks.id"), nullable=False, comment="关联任务"
     )
     asset_type: Mapped[str] = mapped_column(
-        String(20), nullable=False, comment="image / video / audio / composite"
+        String(20), nullable=False, comment="image / video / audio / composite / flowchart"
     )
 
     # 关联分镜（image/video 类型使用）
