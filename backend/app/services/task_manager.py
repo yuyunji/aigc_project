@@ -401,7 +401,12 @@ class TaskManager:
 
         for i, scene in enumerate(scene_list):
             scene_num = scene["scene_number"]
-            progress = 78 + int((i / max(total, 1)) * 17)
+            base_progress = 78 + int((i / max(total, 1)) * 15)
+            self._update_status(task_id, "running", progress=base_progress)
+
+            # 查找已有分镜图的远程 URL，传给 MiniMax
+            image_url = self._get_latest_image_url(task_id, scene_num)
+            logger.info(f"[{task_id}] 分镜{scene_num}/{total} MiniMax {'图生视频' if image_url else '文生视频'}中... (进度 {base_progress}%)")
 
             # 构建 prompt：视觉描述 + 运镜 + 音效描述
             visual = scene.get("visual_description", "") or scene.get("description", "")
@@ -409,12 +414,18 @@ class TaskManager:
             action = scene.get("action_instruction", "")
             dialogue = scene.get("dialogue", "")
             location = scene.get("location", "")
+            # 取分镜脚本配置的时长，默认 6 秒，限制 4-15 秒
+            scene_duration = int(scene.get("duration_seconds", 6) or 6)
+            scene_duration = max(4, min(scene_duration, 15))
 
             sound_clause = ""
             if dialogue:
                 sound_clause = f"Sound: characters speaking naturally, ambient {location or 'scene'} atmosphere"
 
             prompt_parts = []
+            # 日漫风格前缀
+            if settings.image_style:
+                prompt_parts.append(f"Style: {settings.image_style}")
             if camera:
                 prompt_parts.append(f"Camera: {camera}")
             if action:
@@ -429,12 +440,14 @@ class TaskManager:
                 asset = self._create_media_asset(task_id, "video", scene_num, prompt)
                 try:
                     path = await asyncio.wait_for(
-                        minimax_service.generate_video(task_id, scene_num, prompt),
-                        timeout=300,
+                        minimax_service.generate_video(task_id, scene_num, prompt, image_url=image_url, duration=scene_duration),
+                        timeout=1800,
                     )
                     video_paths.append(path)
                     self._update_media_asset(asset.id, "success", file_path=path)
-                    logger.info(f"[{task_id}] 分镜{scene_num} 视频生成成功")
+                    done_progress = 78 + int(((i + 1) / max(total, 1)) * 15)
+                    self._update_status(task_id, "running", progress=done_progress)
+                    logger.info(f"[{task_id}] 分镜{scene_num} 视频生成成功 (进度 {done_progress}%)")
                     break
                 except asyncio.TimeoutError:
                     logger.warning(f"[{task_id}] 分镜{scene_num} 视频生成超时"
@@ -447,7 +460,7 @@ class TaskManager:
                     if retry >= MAX_RETRIES:
                         break
 
-            self._update_status(task_id, "running", progress=progress)
+            self._update_status(task_id, "running", progress=base_progress)
 
         self._update_status(task_id, "running", progress=95)
         logger.info(f"[{task_id}] 视频生成完成: {len(video_paths)}/{total} 成功")
@@ -523,8 +536,13 @@ class TaskManager:
             if provider == "gpt-image-2":
                 # GPT-Image-2: 注入角色外貌到 prompt → 翻译英文 → 发送
                 prompt_parts = []
+                # 强制 2D 日漫风格（英文原样发出，放在最前面不被翻译削弱）
+                prompt_parts.append(
+                    "REQUIRED STYLE: 2D anime, Japanese animation, cel-shaded, "
+                    "flat colors, hand-drawn look, NO 3D rendering, NO photorealism."
+                )
                 if settings.image_style:
-                    prompt_parts.append(f"Style: {settings.image_style}")
+                    prompt_parts.append(f"Style detail: {settings.image_style}")
                 if char_appearance:
                     prompt_parts.append(
                         f"Character appearances (MUST keep consistent across all scenes):\n{char_appearance}"
@@ -537,11 +555,12 @@ class TaskManager:
                     english_prompt = await prompt_builder.build_image_prompt(full_prompt)
                 except Exception:
                     english_prompt = full_prompt
-                path = await asyncio.wait_for(
+                path, remote_url = await asyncio.wait_for(
                     gpt_image_service.generate_scene_image(task_id, scene_num, english_prompt),
-                    timeout=180,
+                    timeout=300,
                 )
             else:
+                remote_url = None
                 # MiniMax image-01（默认）: subject_reference 图像锚定方案
                 if settings.image_style:
                     prompt = f"{settings.image_style}. {prompt}"
@@ -561,10 +580,10 @@ class TaskManager:
                     timeout=180,
                 )
 
-            self._update_media_asset(asset.id, "success", file_path=path)
+            self._update_media_asset(asset.id, "success", file_path=path, file_url=remote_url)
             return {"status": "success", "file_path": path, "asset_id": asset.id}
         except asyncio.TimeoutError:
-            self._update_media_asset(asset.id, "failed", error="图片生成超时（180s）")
+            self._update_media_asset(asset.id, "failed", error="图片生成超时（300s）")
             return {"status": "failed", "error": "图片生成超时，请重试"}
         except Exception as e:
             err = str(e)[:500]
@@ -572,22 +591,29 @@ class TaskManager:
             return {"status": "failed", "error": err}
 
     async def generate_scene_video(self, task_id: str, scene: dict) -> dict:
-        """为单个分镜生成视频（MiniMax-H3 文生视频，含内置音频）"""
+        """为单个分镜生成视频（MiniMax-H3，优先使用已生成的分镜图作参考）"""
         scene_num = scene["scene_number"]
         visual = scene.get("visual_description", "") or scene.get("description", "")
         camera = scene.get("camera_movement", "")
         action = scene.get("action_instruction", "")
         dialogue = scene.get("dialogue", "")
         location = scene.get("location", "")
+        scene_duration = int(scene.get("duration_seconds", 6) or 6)
+        scene_duration = max(4, min(scene_duration, 15))
 
         self._cleanup_asset(task_id, scene_num, "video")
 
-        # 构造 prompt
+        # 查找已有分镜图的远程 URL
+        image_url = self._get_latest_image_url(task_id, scene_num)
+
+        # 构造 prompt（注入日漫风格）
         sound = ""
         if dialogue:
             sound = f"Sound: characters speaking naturally, ambient {location or 'scene'} atmosphere"
 
         parts = []
+        if settings.image_style:
+            parts.append(f"Style: {settings.image_style}")
         if camera:
             parts.append(f"Camera: {camera}")
         if action:
@@ -601,7 +627,7 @@ class TaskManager:
         asset = self._create_media_asset(task_id, "video", scene_num, prompt)
         try:
             path = await asyncio.wait_for(
-                minimax_service.generate_video(task_id, scene_num, prompt),
+                minimax_service.generate_video(task_id, scene_num, prompt, image_url=image_url, duration=scene_duration),
                 timeout=300,
             )
             self._update_media_asset(asset.id, "success", file_path=path)
@@ -681,6 +707,26 @@ class TaskManager:
                     lines.append(f"{c.name}: {'; '.join(appearance_parts)}")
 
             return "\n".join(lines)
+        finally:
+            db.close()
+
+    @staticmethod
+    def _get_latest_image_url(task_id: str, scene_number: int) -> str | None:
+        """获取分镜最新图片的远程 URL，用于视频生成参考"""
+        db = SessionLocal()
+        try:
+            asset = (
+                db.query(MediaAsset)
+                .filter(
+                    MediaAsset.task_id == task_id,
+                    MediaAsset.scene_number == scene_number,
+                    MediaAsset.asset_type == "image",
+                    MediaAsset.status == "success",
+                )
+                .order_by(MediaAsset.created_at.desc())
+                .first()
+            )
+            return asset.file_url if asset else None
         finally:
             db.close()
 
@@ -827,6 +873,7 @@ class TaskManager:
         asset_id: str,
         status: str,
         file_path: str | None = None,
+        file_url: str | None = None,
         error: str | None = None,
     ) -> None:
         """更新 media_asset 状态"""
@@ -837,6 +884,8 @@ class TaskManager:
                 asset.status = status
                 if file_path:
                     asset.file_path = file_path
+                if file_url:
+                    asset.file_url = file_url
                 if error:
                     asset.error_message = error
                 db.commit()

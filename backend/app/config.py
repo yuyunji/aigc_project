@@ -43,8 +43,8 @@ class Settings(BaseSettings):
     minimax_video_ratio: str = "16:9"     # 16:9 横屏 / 9:16 竖屏
     minimax_video_resolution: str = "2K"
     minimax_motion_strength: float = 0.3  # 运动强度 0.25-0.4，漫剧轻动态推荐值
-    minimax_poll_interval: int = 5        # 轮询间隔（秒）
-    minimax_poll_max_retries: int = 60    # 约 5 分钟
+    minimax_poll_interval: int = 10       # 轮询间隔（秒）
+    minimax_poll_max_retries: int = 180   # 约 30 分钟
 
     # ── MiniMax image-01 (分镜图片生成，支持 subject_reference 角色一致性) ──
     image_model: str = "image-01"

@@ -71,7 +71,7 @@
     </el-table-column>
 
     <!-- 操作 -->
-    <el-table-column label="操作" width="100" align="center" fixed="right">
+    <el-table-column label="操作" width="150" align="center" fixed="right">
       <template #default="{ row }">
         <el-button
           v-if="row.status === 'success'"
@@ -82,7 +82,24 @@
         >
           查看结果 →
         </el-button>
-        <span v-else class="no-action">—</span>
+        <el-button
+          v-if="row.status !== 'running'"
+          type="warning"
+          size="small"
+          link
+          @click="$emit('regenerate', row)"
+        >
+          🔄 重新生成
+        </el-button>
+        <el-button
+          v-if="row.status === 'running'"
+          type="danger"
+          size="small"
+          link
+          @click="$emit('regenerate', row)"
+        >
+          ⚠️ 强制重置
+        </el-button>
       </template>
     </el-table-column>
   </el-table>
@@ -93,7 +110,7 @@ defineProps({
   tasks: { type: Array, default: () => [] },
   loading: { type: Boolean, default: false },
 });
-defineEmits(["view-results"]);
+defineEmits(["view-results", "regenerate"]);
 
 function statusType(status) {
   return { pending: "info", running: "", success: "success", failed: "danger" }[status] || "info";

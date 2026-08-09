@@ -40,6 +40,11 @@ export function generateSceneVideo(taskId, sceneNumber, provider) {
   return apiClient.post(`/api/media/${taskId}/scene/${sceneNumber}/video`, null, { params });
 }
 
+/** 一键生成所有分镜图片 */
+export function generateAllImages(taskId) {
+  return apiClient.post(`/api/media/${taskId}/images/generate-all`);
+}
+
 /** 重置失败分镜 */
 export function retryScene(taskId, sceneNumber) {
   return apiClient.post(`/api/media/${taskId}/scene/${sceneNumber}/retry`);

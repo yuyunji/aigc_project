@@ -38,6 +38,7 @@
         :tasks="tasks"
         :loading="loading"
         @view-results="goToResults"
+        @regenerate="onRegenerate"
       />
     </el-card>
   </div>
@@ -46,8 +47,9 @@
 <script setup>
 import { ref, computed, onMounted, onUnmounted } from "vue";
 import { useRouter } from "vue-router";
+import { ElMessage, ElMessageBox } from "element-plus";
 import TaskTable from "../components/TaskTable.vue";
-import { getTaskList } from "../api/task";
+import { getTaskList, regenerateTask } from "../api/task";
 
 const router = useRouter();
 const tasks = ref([]);
@@ -105,6 +107,22 @@ function togglePolling() {
 
 function goToResults(taskId) {
   router.push({ path: "/results", query: { taskId } });
+}
+
+async function onRegenerate(task) {
+  try {
+    await ElMessageBox.confirm(
+      `将删除「${task.title}」的所有生成结果并重新开始，确定吗？`,
+      "确认重新生成",
+      { confirmButtonText: "确定", cancelButtonText: "取消", type: "warning" }
+    );
+    await regenerateTask(task.id);
+    ElMessage.success("已重新入队，请等待处理");
+    await fetchTasks();
+    startPolling();
+  } catch (e) {
+    if (e !== "cancel") ElMessage.error("重新生成失败");
+  }
 }
 
 onMounted(() => {

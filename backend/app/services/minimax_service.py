@@ -30,11 +30,14 @@ class MiniMaxService:
         self.media_dir = settings.media_dir
 
     async def generate_video(
-        self, task_id: str, scene_number: int, prompt: str
+        self, task_id: str, scene_number: int, prompt: str,
+        image_url: str | None = None,
+        duration: int | None = None,
     ) -> str:
         """
         分镜→视频：提交→轮询→下载，返回本地 .mp4 路径。
-        MiniMax-H3 内置音频同步，无需单独配音。
+        支持可选的 image_url 作为参考图（HTTPS URL，图生视频模式）。
+        支持可选的 duration 覆盖默认时长。
         """
         if not self.api_key:
             raise LLMAPIError(
@@ -42,9 +45,10 @@ class MiniMaxService:
             )
 
         # 1. 提交
-        mm_task_id = await self._submit_task(prompt)
+        mm_task_id = await self._submit_task(prompt, image_url, duration)
         logger.info(
-            f"[{task_id}] MiniMax 已提交: {mm_task_id} (分镜 {scene_number})"
+            f"[{task_id}] MiniMax 已提交: {mm_task_id} (分镜 {scene_number}"
+            + (", 图生视频)" if image_url else ", 文生视频)")
         )
 
         # 2. 轮询
@@ -60,16 +64,29 @@ class MiniMaxService:
     # API 调用
     # ------------------------------------------------------------------
 
-    async def _submit_task(self, prompt: str) -> str:
-        """提交文生视频任务，返回 MiniMax task_id"""
+    async def _submit_task(self, prompt: str, image_url: str | None = None, duration: int | None = None) -> str:
+        """提交视频生成任务，返回 MiniMax task_id。支持可选的参考图URL和时长。"""
         headers = {
             "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json",
         }
+
+        # 构建 content 数组
+        content = [{"type": "text", "text": prompt[:2000]}]
+
+        # 如果有分镜参考图 HTTPS URL，加入 content（图生视频模式，首帧引导）
+        if image_url and image_url.startswith("http"):
+            content.append({
+                "type": "image_url",
+                "image_url": {"url": image_url},
+                "role": "first_frame",
+            })
+            logger.debug(f"MiniMax 图生视频模式，首帧参考图: {image_url[:80]}...")
+
         payload = {
             "model": self.model,
-            "content": [{"type": "text", "text": prompt[:2000]}],
-            "duration": self.duration,
+            "content": content,
+            "duration": duration if duration is not None else self.duration,
             "ratio": self.ratio,
             "resolution": self.resolution,
             "motion_strength": self.motion_strength,

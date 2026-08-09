@@ -61,6 +61,17 @@
               <span>🎬 分镜脚本</span>
               <el-tag v-if="storyboards.length" size="small" effect="plain" style="margin-left:6px">{{ storyboards.length }}</el-tag>
             </template>
+            <div class="storyboard-toolbar">
+              <el-button
+                type="warning"
+                size="default"
+                :loading="batchImageGenerating"
+                @click="onGenerateAllImages"
+              >
+                🎬 生成导演分镜
+              </el-button>
+              <span class="toolbar-hint">一键为所有分镜生成日漫风格画面</span>
+            </div>
             <StoryboardCard
               :scenes="storyboards"
               :loading="storyboardsLoading"
@@ -78,11 +89,11 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted } from "vue";
+import { ref, computed, onMounted, onUnmounted } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { ElMessage } from "element-plus";
 import { getTaskList, getOutline, getCharacters, getStoryboards } from "../api/task";
-import { getVideos, getImages, generateSceneImage, generateSceneVideo, retryScene } from "../api/media";
+import { getVideos, getImages, generateSceneImage, generateSceneVideo, generateAllImages, retryScene } from "../api/media";
 import OutlineTab from "../components/OutlineTab.vue";
 import CharacterTab from "../components/CharacterTab.vue";
 import StoryboardCard from "../components/StoryboardCard.vue";
@@ -101,6 +112,7 @@ const outlineLoading = ref(false);
 const charactersLoading = ref(false);
 const storyboardsLoading = ref(false);
 const activeTab = ref("outline");
+const batchImageGenerating = ref(false);
 
 // Pipeline 进度计算
 const pipelineStages = computed(() => {
@@ -163,7 +175,30 @@ async function onGenerateVideo(sn) {
 }
 async function onRetryScene(sn) { try { await retryScene(selectedTaskId.value, sn); ElMessage.success(`分镜${sn} 已重置`); await loadResults(selectedTaskId.value); } catch(e){} }
 
-onMounted(() => loadCompletedTasks());
+async function onGenerateAllImages() {
+  batchImageGenerating.value = true;
+  try {
+    const res = await generateAllImages(selectedTaskId.value);
+    ElMessage.success(`已启动 ${res.data.count} 个分镜的图片生成`);
+    pollUntilDone();
+  } catch (e) { /* global handler */ }
+  finally { batchImageGenerating.value = false; }
+}
+
+onMounted(() => {
+  loadCompletedTasks();
+  // 页面恢复时自动检查是否有未完成的生成任务，恢复轮询
+  document.addEventListener("visibilitychange", () => {
+    if (!document.hidden && selectedTaskId.value) {
+      loadResults(selectedTaskId.value).then(() => {
+        if (mediaAssets.value.some(m => m.status === "running")) pollUntilDone();
+      });
+    }
+  });
+});
+onUnmounted(() => {
+  document.removeEventListener("visibilitychange", () => {});
+});
 </script>
 
 <style lang="scss" scoped>

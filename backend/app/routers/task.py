@@ -1,16 +1,24 @@
 """
 任务管理接口
-POST /api/tasks            — 创建生成任务，入队异步处理
-GET  /api/tasks            — 获取任务列表（按创建时间倒序）
-GET  /api/tasks/stats      — 获取任务数量统计
-GET  /api/tasks/{task_id}  — 查询单个任务状态与进度
+POST /api/tasks                — 创建生成任务，入队异步处理
+GET  /api/tasks                — 获取任务列表（按创建时间倒序）
+GET  /api/tasks/stats          — 获取任务数量统计
+GET  /api/tasks/{task_id}      — 查询单个任务状态与进度
+POST /api/tasks/{task_id}/regenerate — 重置任务并重新生成
 """
+import os
+import shutil
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
+from app.config import settings
 from app.database import get_db
 from app.models.task import Task
+from app.models.outline import Outline
+from app.models.character import Character
+from app.models.storyboard import Storyboard
+from app.models.media import MediaAsset
 from app.schemas.task import (
     TaskCreateRequest,
     TaskResponse,
@@ -101,3 +109,40 @@ def get_task(task_id: str, db: Session = Depends(get_db)):
     if not task:
         raise HTTPException(status_code=404, detail=f"任务 {task_id} 不存在")
     return TaskResponse.model_validate(task)
+
+
+@router.post("/{task_id}/regenerate")
+async def regenerate_task(task_id: str, db: Session = Depends(get_db)):
+    """
+    重置任务并重新生成（支持成功/失败/卡住的 running/pending 任务）。
+    1. 删除已生成的数据（大纲、角色、分镜、媒体资源 + 文件）
+    2. 重置任务状态为 pending
+    3. 重新入队
+    """
+    task = db.query(Task).filter(Task.id == task_id).first()
+    if not task:
+        raise HTTPException(status_code=404, detail=f"任务 {task_id} 不存在")
+
+    source_text = task.source_text
+
+    # ── 清理关联数据 ──
+    db.query(Outline).filter(Outline.task_id == task_id).delete()
+    db.query(Character).filter(Character.task_id == task_id).delete()
+    db.query(Storyboard).filter(Storyboard.task_id == task_id).delete()
+    db.query(MediaAsset).filter(MediaAsset.task_id == task_id).delete()
+
+    # ── 清理媒体文件 ──
+    media_path = os.path.join(settings.media_dir, task_id)
+    if os.path.isdir(media_path):
+        shutil.rmtree(media_path, ignore_errors=True)
+
+    # ── 重置任务状态 ──
+    task.status = "pending"
+    task.progress = 0
+    task.error_message = None
+    db.commit()
+
+    # ── 重新入队 ──
+    await task_queue.enqueue(task_id=task.id, source_text=source_text)
+
+    return {"status": "regenerated", "task_id": task_id}

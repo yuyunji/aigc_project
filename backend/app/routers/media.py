@@ -250,6 +250,45 @@ def get_images(task_id: str, db: Session = Depends(get_db)):
     )
 
 
+@router.post("/{task_id}/images/generate-all")
+async def generate_all_images(task_id: str):
+    """一键为所有分镜生成图片"""
+    db = SessionLocal()
+    try:
+        task = db.query(Task).filter(Task.id == task_id).first()
+        if not task:
+            raise HTTPException(status_code=404, detail=f"任务 {task_id} 不存在")
+
+        scenes = (
+            db.query(Storyboard)
+            .filter(Storyboard.task_id == task_id)
+            .order_by(Storyboard.scene_number.asc())
+            .all()
+        )
+        if not scenes:
+            raise HTTPException(status_code=400, detail="该任务尚无分镜")
+
+        scene_list = [{
+            "scene_number": s.scene_number,
+            "scene_title": s.scene_title or "",
+            "location": s.location or "",
+            "time_of_day": s.time_of_day or "",
+            "characters_in_scene": s.characters_in_scene or "",
+            "camera_movement": s.camera_movement or "",
+            "dialogue": s.dialogue or "",
+            "visual_description": s.visual_description or s.description or "",
+            "image_prompt": s.image_prompt or "",
+            "description": s.description or "",
+        } for s in scenes]
+
+        for scene in scene_list:
+            asyncio.create_task(_run_scene_image(task_id, scene))
+
+        return {"status": "started", "task_id": task_id, "count": len(scene_list)}
+    finally:
+        db.close()
+
+
 @router.get("/{task_id}/videos", response_model=MediaAssetListResponse)
 def get_videos(task_id: str, db: Session = Depends(get_db)):
     _get_task_or_404(task_id, db)

@@ -32,17 +32,12 @@ class GptImageService:
 
     async def generate_scene_image(
         self, task_id: str, scene_number: int, prompt: str
-    ) -> str:
+    ) -> tuple[str, str]:
         """
         为单个分镜生成图片。
 
-        Args:
-            task_id:      任务 ID
-            scene_number: 分镜序号
-            prompt:       英文 image prompt
-
         Returns:
-            本地图片文件路径
+            (本地图片文件路径, 远程HTTPS URL)
         """
         if not self.api_key:
             raise LLMAPIError("OpenAI API Key 未配置，请在 .env 中设置 OPENAI_API_KEY")
@@ -52,7 +47,7 @@ class GptImageService:
 
         local_path = await self._download(task_id, scene_number, image_url)
         logger.info(f"[{task_id}] 图片已下载: {local_path}")
-        return local_path
+        return local_path, image_url
 
     # ------------------------------------------------------------------
     # 导演流程图生成（核心新功能）
