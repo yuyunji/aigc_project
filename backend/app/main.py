@@ -6,8 +6,9 @@ import logging
 import os
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from app.config import settings
@@ -89,10 +90,29 @@ async def health_check():
     return {"status": "ok", "service": "AIGC短剧工作台"}
 
 
-# 静态文件服务（前端构建产物 + 媒体文件）—— 放在最后，避免拦截 API 路由
+# 静态文件服务 + SPA fallback（前端构建产物 + 媒体文件）
 media_dir = os.path.abspath(settings.media_dir)
 os.makedirs("static", exist_ok=True)
 os.makedirs(media_dir, exist_ok=True)
-if os.path.isdir("static") and os.listdir("static"):
-    app.mount("/", StaticFiles(directory="static", html=True), name="static")
-app.mount("/media", StaticFiles(directory=media_dir), name="media")
+
+STATIC_DIR = os.path.abspath("static")
+SPA_INDEX = os.path.join(STATIC_DIR, "index.html")
+
+if os.path.isfile(SPA_INDEX):
+    # 先挂载 /media（避免被 SPA fallback 拦截）
+    app.mount("/media", StaticFiles(directory=media_dir), name="media")
+
+    # 静态资源走文件系统
+    app.mount("/assets", StaticFiles(directory=os.path.join(STATIC_DIR, "assets")), name="assets")
+
+    # 其他所有路径 → index.html（SPA router 处理）
+    @app.get("/{full_path:path}")
+    async def serve_spa(full_path: str):
+        file_path = os.path.join(STATIC_DIR, full_path)
+        if full_path and os.path.isfile(file_path):
+            return FileResponse(file_path)
+        if os.path.isfile(SPA_INDEX):
+            return FileResponse(SPA_INDEX)
+        raise HTTPException(status_code=404, detail="Not Found")
+else:
+    app.mount("/media", StaticFiles(directory=media_dir), name="media")
