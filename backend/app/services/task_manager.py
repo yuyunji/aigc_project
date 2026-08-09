@@ -516,26 +516,25 @@ class TaskManager:
             task_id, scene.get("characters_in_scene", "")
         )
 
-        # 为第一个出场角色生成定妆参考图，作为图片生成的 identity anchor
-        ref_image_path = None
+        # 小云雀方案: 为出场角色生成定妆照，传入 subject_reference 锚定角色形象
+        ref_image_url = None
         char_names = self._parse_char_names(scene.get("characters_in_scene", ""))
         if char_names and char_appearance:
-            ref_image_path = await self._ensure_character_ref(
+            ref_image_url = await self._ensure_character_ref(
                 task_id, char_names[0], char_appearance
             )
-        if ref_image_path:
+        if ref_image_url:
             prompt = (
                 f"{prompt}. "
-                f"Keep the character appearance exactly as in the reference image, "
-                f"same face, same outfit, same hair style"
+                f"Keep the character ({char_names[0]}) appearance consistent with the reference image"
             )
 
         self._cleanup_asset(task_id, scene_num, "image")
         asset = self._create_media_asset(task_id, "image", scene_num, prompt)
         try:
-            from app.services.glm_image_service import glm_image_service
+            from app.services.minimax_image_service import minimax_image_service
             path = await asyncio.wait_for(
-                glm_image_service.generate_image(task_id, scene_num, prompt, ref_image_path),
+                minimax_image_service.generate_image(task_id, scene_num, prompt, ref_image_url),
                 timeout=180,
             )
             self._update_media_asset(asset.id, "success", file_path=path)
@@ -672,21 +671,32 @@ class TaskManager:
         task_id: str, char_name: str, char_appearance: str
     ) -> str | None:
         """
-        确保角色有定妆参考图。已存在则直接返回路径，否则调用 Seedream 生成。
-        参考图保存在 media/{task_id}/characters/ 下。
+        小云雀服化道Agent：确保角色有定妆参考图。
+        已存在则返回本地路径，否则调用 MiniMax image-01 生成。
+        同时缓存 HTTPS URL 到 .url 文件，用于 subject_reference。
+        返回 HTTPS URL（用于 API subject_reference）或 None。
         """
-        from app.services.glm_image_service import glm_image_service
+        from app.services.minimax_image_service import minimax_image_service
         import os
 
         ref_dir = os.path.join(settings.media_dir, task_id, "characters")
         os.makedirs(ref_dir, exist_ok=True)
-        # 安全文件名
         safe_name = char_name.replace("/", "_").replace("\\", "_")[:50]
         ref_path = os.path.join(ref_dir, f"{safe_name}.png")
+        url_path = os.path.join(ref_dir, f"{safe_name}.url")
 
-        # 已存在则直接返回
-        if os.path.isfile(ref_path):
-            return ref_path
+        # 已存在本地文件且 URL 未过期，直接返回缓存的 URL
+        if os.path.isfile(ref_path) and os.path.isfile(url_path):
+            with open(url_path, "r") as uf:
+                cached_url = uf.read().strip()
+            if cached_url:
+                return cached_url
+        elif os.path.isfile(url_path):
+            # 本地文件丢了但 URL 还在
+            with open(url_path, "r") as uf:
+                cached_url = uf.read().strip()
+            if cached_url:
+                return cached_url
 
         # 提取外貌 prompt
         lines = char_appearance.split("\n")
@@ -697,25 +707,19 @@ class TaskManager:
                 break
         if not appearance_text:
             appearance_text = char_appearance.split("\n")[0] if char_appearance else ""
-
         if not appearance_text:
             return None
 
         try:
-            ref_prompt = (
-                f"{settings.image_style or ''}. "
-                f"Character reference portrait of {char_name}: {appearance_text}. "
-                "Front view, half-body, clean background, full outfit, clear face"
+            # 生成角色定妆照（返回本地路径 + HTTPS URL）
+            local_path, https_url = await minimax_image_service.generate_character_portrait(
+                task_id, char_name, appearance_text
             )
-            ref_url = await glm_image_service._generate(ref_prompt)
-            # 下载参考图
-            async with httpx.AsyncClient(timeout=60) as client:
-                resp = await client.get(ref_url)
-                resp.raise_for_status()
-            with open(ref_path, "wb") as f:
-                f.write(resp.content)
-            logger.info(f"[{task_id}] 角色定妆参考图已生成: {char_name} → {ref_path}")
-            return ref_path
+            # 缓存 HTTPS URL
+            with open(url_path, "w") as uf:
+                uf.write(https_url)
+            logger.info(f"[{task_id}] 角色定妆照已生成: {char_name} (URL cached)")
+            return https_url
         except Exception as e:
             logger.warning(f"[{task_id}] 角色参考图生成失败: {char_name}: {e}")
             return None

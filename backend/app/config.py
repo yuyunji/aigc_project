@@ -45,11 +45,9 @@ class Settings(BaseSettings):
     minimax_poll_interval: int = 5        # 轮询间隔（秒）
     minimax_poll_max_retries: int = 60    # 约 5 分钟
 
-    # ── GLM-Image (分镜图片生成) ──
-    glm_api_key: str = ""
-    image_model: str = "glm-image"
-    image_size: str = "1472x1088"
-    image_quality: str = "hd"
+    # ── MiniMax image-01 (分镜图片生成，支持 subject_reference 角色一致性) ──
+    image_model: str = "image-01"
+    image_aspect_ratio: str = "16:9"
     image_style: str = ""  # 全局风格 prompt 前缀，如 "Japanese anime style, manga art"
 
     # ── FFmpeg 字幕拼接 ──
