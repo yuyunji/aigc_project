@@ -43,10 +43,39 @@ class Storyboard(Base):
         Text, nullable=True, comment="画面描述（用于 image prompt 生成）"
     )
     image_prompt: Mapped[str | None] = mapped_column(
-        Text, nullable=True, comment="英文 image prompt"
+        Text, nullable=True, comment="完整图片/视频生成 prompt"
     )
     duration_seconds: Mapped[float | None] = mapped_column(
         Float, nullable=True, comment="建议时长（秒）"
+    )
+
+    # ── 25 镜模板字段 ──
+    shot_size: Mapped[str | None] = mapped_column(
+        String(50), nullable=True, comment="镜头景别（远景/全景/中景/近景/特写/大特写）"
+    )
+    camera_angle: Mapped[str | None] = mapped_column(
+        String(50), nullable=True, comment="拍摄角度（平视/俯拍/仰拍/侧拍/低角度仰拍）"
+    )
+    subject: Mapped[str | None] = mapped_column(
+        Text, nullable=True, comment="画面主体人物"
+    )
+    environment: Mapped[str | None] = mapped_column(
+        Text, nullable=True, comment="场景环境"
+    )
+    mood: Mapped[str | None] = mapped_column(
+        String(50), nullable=True, comment="情绪氛围"
+    )
+    composition: Mapped[str | None] = mapped_column(
+        String(50), nullable=True, comment="构图"
+    )
+    quality_notes: Mapped[str | None] = mapped_column(
+        Text, nullable=True, comment="画质补充"
+    )
+    transition: Mapped[str | None] = mapped_column(
+        String(100), nullable=True, comment="转场衔接（淡入/硬切/溶解/推入/拉出/闪白/黑场/叠化/匹配剪辑）"
+    )
+    dialogue_text: Mapped[str | None] = mapped_column(
+        Text, nullable=True, comment="台词对白"
     )
 
     # 原始完整数据（JSON 备查）

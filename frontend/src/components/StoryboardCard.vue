@@ -14,52 +14,65 @@
         <el-card shadow="hover" class="timeline-card">
           <!-- 标题行 -->
           <div class="scene-header">
-            <h3 class="scene-title">{{ scene.scene_title || '第' + scene.scene_number + '幕' }}</h3>
+            <h3 class="scene-title">{{ scene.scene_title || '镜头 ' + scene.scene_number }}</h3>
             <el-tag size="small" effect="plain" round v-if="scene.duration_seconds">
               {{ scene.duration_seconds }}s
             </el-tag>
           </div>
 
-          <!-- 元信息 -->
+          <!-- 模板格式字段：镜头景别 / 拍摄角度 / 运镜 / 构图 / 情绪 -->
           <div class="scene-meta">
-            <span v-if="scene.location" class="meta-item"><span class="meta-icon">📍</span>{{ scene.location }}</span>
-            <span v-if="scene.time_of_day" class="meta-item"><span class="meta-icon">🕐</span>{{ scene.time_of_day }}</span>
+            <span v-if="scene.shot_size" class="meta-item"><span class="meta-icon">🎞️</span>{{ scene.shot_size }}</span>
+            <span v-if="scene.camera_angle" class="meta-item"><span class="meta-icon">📐</span>{{ scene.camera_angle }}</span>
             <span v-if="scene.camera_movement" class="meta-item"><span class="meta-icon">🎥</span>{{ scene.camera_movement }}</span>
+            <span v-if="scene.composition" class="meta-item"><span class="meta-icon">🖼️</span>{{ scene.composition }}</span>
+            <span v-if="scene.mood" class="meta-item mood-tag"><span class="meta-icon">🎭</span>{{ scene.mood }}</span>
+            <span v-if="scene.transition" class="meta-item transition-tag"><span class="meta-icon">🎬</span>{{ scene.transition }}</span>
           </div>
 
-          <!-- 生成图片 -->
-          <div v-if="getSceneImage(scene.scene_number)" class="scene-image">
-            <img :src="getMediaUrl(getSceneImage(scene.scene_number).file_path) + '?v=' + getSceneImage(scene.scene_number).id" :alt="scene.scene_title" />
+          <!-- 模板格式主体内容 -->
+          <div v-if="scene.subject" class="scene-subject">
+            <div class="section-label">👤 画面主体人物</div>
+            <p>{{ scene.subject }}</p>
           </div>
 
+          <div v-if="scene.environment" class="scene-environment">
+            <div class="section-label">📍 场景环境</div>
+            <p>{{ scene.environment }}</p>
+          </div>
+
+          <!-- 旧版兼容：出场角色 / 画面描述 / 台词 -->
           <div v-if="scene.characters_in_scene" class="scene-characters">
             <span class="char-label">👥 出场：</span>
             <el-tag v-for="char in splitChars(scene.characters_in_scene)" :key="char" size="small" effect="plain" class="char-tag">{{ char }}</el-tag>
           </div>
 
-          <div v-if="scene.visual_description" class="scene-visual">
+          <div v-if="scene.visual_description && !scene.subject" class="scene-visual">
             <div class="section-label">🖼️ 画面描述</div>
             <p>{{ scene.visual_description }}</p>
           </div>
 
-          <div v-if="scene.dialogue" class="scene-dialogue">
+          <div v-if="scene.dialogue_text && scene.dialogue_text !== '@无' && scene.dialogue_text !== '@无对白'" class="scene-dialogue">
+            <div class="section-label">💬 台词对白</div>
+            <div class="dialogue-line is-speaker">{{ scene.dialogue_text }}</div>
+          </div>
+
+          <!-- 旧版台词兜底 -->
+          <div v-if="!scene.dialogue_text && scene.dialogue" class="scene-dialogue">
             <div class="section-label">💬 台词</div>
             <div v-for="(line, i) in splitLines(scene.dialogue)" :key="i" class="dialogue-line" :class="{ 'is-speaker': isSpeakerLine(line) }">{{ line }}</div>
           </div>
 
+          <!-- 完整 prompt 折叠 -->
+          <el-collapse v-if="scene.image_prompt" class="prompt-collapse">
+            <el-collapse-item title="📝 完整生成 Prompt">
+              <p class="prompt-text">{{ scene.image_prompt }}</p>
+            </el-collapse-item>
+          </el-collapse>
+
           <!-- ── 操作区 ── -->
           <div class="scene-actions">
             <div class="actions-row">
-              <el-button
-                size="small"
-                :type="imageState(scene.scene_number) === 'success' ? 'warning' : 'primary'"
-                plain
-                :loading="imageState(scene.scene_number) === 'running'"
-                :disabled="imageState(scene.scene_number) === 'running'"
-                @click="$emit('generate-image', scene.scene_number)"
-              >
-                {{ imageState(scene.scene_number) === 'success' ? '🔄 重新生成图片' : '🎨 生成图片' }}
-              </el-button>
               <el-button
                 size="small"
                 :type="videoState(scene.scene_number) === 'success' ? 'warning' : 'success'"
@@ -109,13 +122,7 @@ const props = defineProps({
   mediaAssets: { type: Array, default: () => [] },
 });
 
-defineEmits(["generate-image", "generate-video", "retry"]);
-
-function getSceneImage(sceneNumber) {
-  return (props.mediaAssets || []).find(
-    (m) => m.scene_number === sceneNumber && m.asset_type === "image" && m.status === "success"
-  );
-}
+defineEmits(["generate-video", "retry"]);
 
 function getSceneMedia(sceneNumber) {
   return (props.mediaAssets || []).filter(
@@ -123,7 +130,6 @@ function getSceneMedia(sceneNumber) {
   );
 }
 
-function imageState(sceneNumber) { return mediaState(sceneNumber, "image"); }
 function videoState(sceneNumber) { return mediaState(sceneNumber, "video"); }
 
 function mediaState(sceneNumber, type) {
@@ -185,10 +191,20 @@ function getMediaUrl(filePath) {
 
 .scene-visual { margin-bottom: 12px; }
 .scene-visual p { font-size: 13px; line-height: 1.7; color: var(--color-text-primary); }
+.scene-subject { margin-bottom: 10px; }
+.scene-subject p { font-size: 13px; line-height: 1.7; color: var(--color-text-primary); }
+.scene-environment { margin-bottom: 10px; }
+.scene-environment p { font-size: 13px; line-height: 1.7; color: var(--color-text-accent); }
 .scene-dialogue { margin-bottom: 8px; }
 .dialogue-line { font-size: 13px; line-height: 1.7; color: var(--color-text-primary); padding: 4px 0; padding-left: 8px; border-left: 2px solid var(--color-primary-light); }
 .dialogue-line.is-speaker { font-weight: 600; color: var(--color-primary-dark); border-left-color: var(--color-primary); }
 .section-label { font-size: 12px; font-weight: 600; color: var(--color-text-tertiary); text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 4px; }
+.mood-tag { background: var(--color-primary-bg); padding: 2px 8px; border-radius: 4px; }
+.transition-tag { background: rgba(245,158,11,0.12); padding: 2px 8px; border-radius: 4px; color: var(--color-warning, #d97706); }
+.prompt-collapse { margin-top: 10px; }
+.prompt-collapse :deep(.el-collapse-item__header) { font-size: 12px; color: var(--color-text-tertiary); border-bottom: none; }
+.prompt-collapse :deep(.el-collapse-item__wrap) { border-bottom: none; }
+.prompt-text { font-size: 12px; line-height: 1.6; color: var(--color-text-secondary); background: var(--color-bg-secondary); padding: 10px; border-radius: 6px; word-break: break-all; white-space: pre-wrap; }
 
 .scene-actions { margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--color-border-light); }
 .actions-row { display: flex; gap: 8px; flex-wrap: wrap; }

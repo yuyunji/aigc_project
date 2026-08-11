@@ -27,45 +27,6 @@
           :value="t.id"
         />
       </el-select>
-
-      <el-select
-        v-model="imageProvider"
-        size="large"
-        style="width: 180px; margin-left: 12px"
-        @change="onProviderChange"
-      >
-        <el-option label="🖼️ MiniMax image-01" value="minimax" />
-        <el-option label="🖼️ GPT-Image-2" value="gpt-image-2" />
-      </el-select>
-
-      <el-select
-        v-model="videoProvider"
-        size="large"
-        style="width: 180px; margin-left: 8px"
-        @change="onProviderChange"
-      >
-        <el-option label="🎥 MiniMax-H3" value="minimax-h3" />
-      </el-select>
-
-      <el-button
-        v-if="selectedTaskId"
-        type="primary"
-        style="margin-left: 12px"
-        @click="triggerGeneration"
-        :loading="triggering"
-      >
-        🎥 批量生成视频
-      </el-button>
-
-      <el-button
-        v-if="selectedTaskId && imageProvider === 'gpt-image-2'"
-        type="warning"
-        style="margin-left: 8px"
-        @click="triggerFlowchart"
-        :loading="flowchartGenerating"
-      >
-        🎬 生成导演流程图
-      </el-button>
     </div>
 
     <el-empty v-if="!selectedTaskId" description="请选择任务" />
@@ -84,6 +45,14 @@
           <el-tag v-if="videos.length" size="small" effect="plain" style="margin-left:8px">
             {{ videos.filter(v=>v.status==='success').length }}/{{ videos.length }}
           </el-tag>
+          <el-button
+            v-if="videos.filter(v=>v.status==='success').length >= 2"
+            type="primary" size="small" style="margin-left:auto"
+            :loading="compositing"
+            @click="triggerComposite"
+          >
+            {{ compositing ? '⏳ 拼接中...' : '🎬 视频拼接' }}
+          </el-button>
         </template>
         <div v-if="videos.length" v-loading="videosLoading" class="video-grid">
           <VideoPlayer
@@ -98,40 +67,24 @@
       </el-card>
 
       <!-- 最终合成 -->
-      <el-card shadow="never" class="section-card" v-if="composite && composite.status === 'success'">
+      <el-card shadow="never" class="section-card" v-if="composite">
         <template #header>
           <span class="section-title">🎬 最终合成视频</span>
-          <el-tag type="success" size="small" effect="plain" style="margin-left:8px">已完成</el-tag>
+          <el-tag v-if="composite.status === 'success'" type="success" size="small" effect="plain" style="margin-left:8px">已完成</el-tag>
+          <el-tag v-else-if="composite.status === 'failed'" type="danger" size="small" effect="plain" style="margin-left:8px">失败</el-tag>
+          <el-tag v-else type="warning" size="small" effect="plain" style="margin-left:8px">拼接中</el-tag>
         </template>
-        <VideoPlayer
+        <VideoPlayer v-if="composite.status === 'success'"
           :src="getMediaUrl(composite.file_path)"
           title="完整短剧"
           :loading="compositeLoading"
         />
-      </el-card>
-
-      <!-- 导演流程图 -->
-      <el-card shadow="never" class="section-card" v-if="flowchart">
-        <template #header>
-          <span class="section-title">🎬 导演流程图</span>
-          <el-tag v-if="flowchart.status === 'success'" type="success" size="small" effect="plain" style="margin-left:8px">已完成</el-tag>
-          <el-tag v-else-if="flowchart.status === 'failed'" type="danger" size="small" effect="plain" style="margin-left:8px">失败</el-tag>
-          <el-tag v-else type="warning" size="small" effect="plain" style="margin-left:8px">生成中</el-tag>
-        </template>
-        <div v-if="flowchart.status === 'success'" class="flowchart-preview">
-          <img :src="getMediaUrl(flowchart.file_path)" alt="导演流程图" @click="showFlowchartFull = true" />
-        </div>
-        <el-alert v-if="flowchart.status === 'failed'" :title="flowchart.error_message" type="error" show-icon :closable="false" />
-        <div v-if="flowchart.status === 'running'" class="flowchart-loading">
-          <el-icon class="is-loading" :size="32"><Loading /></el-icon>
-          <p>GPT-Image-2 正在生成导演流程图...</p>
+        <el-alert v-if="composite.status === 'failed'" :title="composite.error_message" type="error" show-icon :closable="false" />
+        <div v-if="composite.status === 'running'" style="text-align:center;padding:32px;color:var(--color-text-secondary)">
+          ⏳ 正在拼接视频片段，添加转场效果...
         </div>
       </el-card>
 
-      <!-- 流程图全屏预览 -->
-      <el-dialog v-model="showFlowchartFull" title="导演流程图" width="90%" top="2vh">
-        <img v-if="flowchart" :src="getMediaUrl(flowchart.file_path)" style="width:100%" alt="导演流程图全屏" />
-      </el-dialog>
     </div>
   </div>
 </template>
@@ -144,7 +97,7 @@ import { Loading } from "@element-plus/icons-vue";
 import VideoPlayer from "../components/VideoPlayer.vue";
 import MediaPipeline from "../components/MediaPipeline.vue";
 import { getTaskList } from "../api/task";
-import { getPipelineProgress, getVideos, getComposite, getFlowchart, generateFlowchart } from "../api/media";
+import { getPipelineProgress, getVideos, getComposite } from "../api/media";
 import apiClient from "../api/index";
 
 const route = useRoute();
@@ -160,15 +113,11 @@ const videos = ref([]);
 const videosLoading = ref(false);
 const composite = ref(null);
 const compositeLoading = ref(false);
+const compositing = ref(false);
 
 // Provider 选择（从 localStorage 恢复）
 const imageProvider = ref(localStorage.getItem("aigc_image_provider") || "minimax");
 const videoProvider = ref(localStorage.getItem("aigc_video_provider") || "minimax-h3");
-
-// 流程图
-const flowchart = ref(null);
-const flowchartGenerating = ref(false);
-const showFlowchartFull = ref(false);
 
 async function loadEligibleTasks() {
   tasksLoading.value = true;
@@ -215,38 +164,11 @@ function onProviderChange() {
   localStorage.setItem("aigc_video_provider", videoProvider.value);
 }
 
-async function triggerFlowchart() {
-  if (!selectedTaskId.value) return;
-  flowchartGenerating.value = true;
-  try {
-    await generateFlowchart(selectedTaskId.value);
-    ElMessage.success("导演流程图生成已启动，请等待...");
-    let polls = 0;
-    const poller = setInterval(async () => {
-      await loadFlowchart(selectedTaskId.value);
-      polls++;
-      if (flowchart.value?.status === "success" || flowchart.value?.status === "failed" || polls > 30) {
-        clearInterval(poller);
-        if (flowchart.value?.status === "success") ElMessage.success("导演流程图已生成！");
-      }
-    }, 5000);
-  } catch (e) { /* global handler */ }
-  finally { flowchartGenerating.value = false; }
-}
-
-async function loadFlowchart(taskId) {
-  try {
-    const r = await getFlowchart(taskId);
-    flowchart.value = r.data;
-  } catch (e) { /* ignore */ }
-}
-
 async function loadAll(taskId) {
   await Promise.allSettled([
     (async () => { pipelineLoading.value = true; try { const r = await getPipelineProgress(taskId); pipeline.value = r.data; } catch(e){} finally { pipelineLoading.value = false; } })(),
     (async () => { videosLoading.value = true; try { const r = await getVideos(taskId); videos.value = r.data.assets || []; } catch(e){} finally { videosLoading.value = false; } })(),
     (async () => { compositeLoading.value = true; try { const r = await getComposite(taskId); composite.value = r.data; } catch(e){} finally { compositeLoading.value = false; } })(),
-    (async () => { try { const r = await getFlowchart(taskId); flowchart.value = r.data; } catch(e){} })(),
   ]);
 }
 
@@ -254,6 +176,25 @@ function getMediaUrl(filePath) {
   if (!filePath) return "";
   const parts = filePath.replace(/\\/g, "/").split("/media/");
   return parts.length > 1 ? `/media/${parts[1]}` : filePath;
+}
+
+async function triggerComposite() {
+  compositing.value = true;
+  try {
+    await apiClient.post(`/api/media/${selectedTaskId.value}/composite`);
+    ElMessage.success("视频拼接已启动，正在添加转场效果...");
+    // 轮询合成结果
+    let polls = 0;
+    const poller = setInterval(async () => {
+      await loadAll(selectedTaskId.value);
+      polls++;
+      if (composite.value?.status === "success" || composite.value?.status === "failed" || polls > 60) {
+        clearInterval(poller);
+        if (composite.value?.status === "success") ElMessage.success("视频拼接完成！");
+        compositing.value = false;
+      }
+    }, 5000);
+  } catch (e) { compositing.value = false; }
 }
 
 onMounted(() => loadEligibleTasks());
@@ -272,23 +213,5 @@ onMounted(() => loadEligibleTasks());
   gap: var(--space-md);
 }
 
-.flowchart-preview {
-  border-radius: var(--radius-md);
-  overflow: hidden;
-  cursor: pointer;
-  transition: transform 0.2s;
 
-  &:hover { transform: scale(1.01); }
-
-  img { width: 100%; display: block; }
-}
-
-.flowchart-loading {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 12px;
-  padding: 32px;
-  color: var(--color-text-secondary);
-}
 </style>

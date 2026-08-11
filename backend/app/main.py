@@ -15,7 +15,7 @@ from fastapi.staticfiles import StaticFiles
 
 from app.config import settings
 from app.database import init_db
-from app.routers import upload, task, result, media
+from app.routers import upload, task, result, media, asset
 from app.services.task_queue import task_queue
 from app.utils.exceptions import register_exception_handlers
 
@@ -118,6 +118,7 @@ app.include_router(upload.router, prefix="/api")
 app.include_router(task.router, prefix="/api")
 app.include_router(result.router, prefix="/api")
 app.include_router(media.router, prefix="/api")
+app.include_router(asset.router, prefix="/api")
 
 # 注册全局异常 handler
 register_exception_handlers(app)

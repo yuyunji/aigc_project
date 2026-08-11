@@ -33,11 +33,13 @@ def init_db():
     import app.models.character    # noqa: F401
     import app.models.storyboard   # noqa: F401
     import app.models.media        # noqa: F401
+    import app.models.asset        # noqa: F401
 
     Base.metadata.create_all(bind=engine)
 
-    # ── SQLite 列迁移：为旧 storyboards 表补全新列 ──
+    # ── SQLite 列迁移：为旧表补全新列 ──
     _migrate_storyboard_columns()
+    _migrate_task_columns()
 
 
 def _migrate_storyboard_columns():
@@ -52,6 +54,16 @@ def _migrate_storyboard_columns():
         "visual_description": "TEXT",
         "image_prompt": "TEXT",
         "duration_seconds": "FLOAT",
+        # 25 镜模板新字段
+        "shot_size": "VARCHAR(50)",
+        "camera_angle": "VARCHAR(50)",
+        "subject": "TEXT",
+        "environment": "TEXT",
+        "mood": "VARCHAR(50)",
+        "composition": "VARCHAR(50)",
+        "quality_notes": "TEXT",
+        "transition": "VARCHAR(100)",
+        "dialogue_text": "TEXT",
     }
     with engine.connect() as conn:
         # 获取已有列名
@@ -66,6 +78,27 @@ def _migrate_storyboard_columns():
                     )
                 except Exception:
                     pass  # 列已存在或其他错误，跳过
+        conn.commit()
+
+
+def _migrate_task_columns():
+    """为旧 tasks 表添加缺失的列"""
+    new_columns = {
+        "global_prefix": "TEXT",
+        "post_constraint": "TEXT",
+    }
+    with engine.connect() as conn:
+        existing = {
+            row[1] for row in conn.execute(text("PRAGMA table_info(tasks)"))
+        }
+        for col_name, col_type in new_columns.items():
+            if col_name not in existing:
+                try:
+                    conn.execute(
+                        text(f"ALTER TABLE tasks ADD COLUMN {col_name} {col_type}")
+                    )
+                except Exception:
+                    pass
         conn.commit()
 
 

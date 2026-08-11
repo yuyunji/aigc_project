@@ -127,70 +127,66 @@ class TaskManager:
         )
         self._update_status(task_id, "running", progress=20)
 
-        # ── 阶段 2：生成剧本大纲 ──
-        logger.info(f"[{task_id}] 阶段2: 生成大纲")
+        # ── 阶段 2：AI 分镜师 25 镜拆解（单次 LLM 调用）──
+        logger.info(f"[{task_id}] 阶段2: AI分镜师 25 镜拆解")
         self._update_status(task_id, "running", progress=25)
 
-        stage_timeout = settings.llm_call_timeout + 10
-        outline_content = await asyncio.wait_for(
-            llm_service.generate_outline(chunks),
-            timeout=stage_timeout,
-        )
-
-        if not outline_content or not outline_content.strip():
-            raise LLMAPIError("大纲生成结果为空，请重试")
-
-        self._save_outline(task_id, outline_content)
-        self._update_status(task_id, "running", progress=45)
-        logger.info(f"[{task_id}] 大纲生成完成 ({len(outline_content)} 字)")
-
-        # ── 阶段 3：生成人物角色设定 ──
-        logger.info(f"[{task_id}] 阶段3: 生成人物角色")
-        self._update_status(task_id, "running", progress=50)
-
-        characters_text = await asyncio.wait_for(
-            llm_service.generate_characters(outline_content, source_text),
-            timeout=stage_timeout,
-        )
-
-        if not characters_text or not characters_text.strip():
-            raise LLMAPIError("人物角色生成结果为空，请重试")
-
-        character_list = self._parse_characters(characters_text)
-        if not character_list:
-            raise LLMAPIError("人物角色解析失败，请重试")
-
-        self._save_characters(task_id, character_list)
-        self._update_status(task_id, "running", progress=70)
-        logger.info(f"[{task_id}] 人物生成完成: {len(character_list)} 个角色")
-
-        # ── 阶段 4：生成分镜脚本 ──
-        logger.info(f"[{task_id}] 阶段4: 生成分镜")
-        self._update_status(task_id, "running", progress=75)
+        stage_timeout = settings.llm_call_timeout + 30
 
         storyboard_text = await asyncio.wait_for(
-            llm_service.generate_storyboard(outline_content, characters_text),
+            llm_service.generate_storyboard_single(chunks),
             timeout=stage_timeout,
         )
 
         if not storyboard_text or not storyboard_text.strip():
-            raise LLMAPIError("分镜脚本生成结果为空，请重试")
+            raise LLMAPIError("分镜提示词生成结果为空，请重试")
 
-        scene_list = self._parse_storyboards(storyboard_text)
+        logger.info(
+            f"[{task_id}] LLM 返回 {len(storyboard_text)} 字符: "
+            f"{storyboard_text[:200].replace(chr(10), '↵')}..."
+        )
+
+        # 提取 GLOBAL_PREFIX
+        global_prefix = self._extract_global_prefix(storyboard_text)
+        if global_prefix:
+            self._save_global_prefix(task_id, global_prefix)
+            logger.info(f"[{task_id}] 全局前缀: {global_prefix[:80]}...")
+        else:
+            logger.warning(f"[{task_id}] 未提取到全局前缀")
+
+        # 提取 POST_CONSTRAINT
+        post_constraint = self._extract_post_constraint(storyboard_text)
+        if post_constraint:
+            self._save_post_constraint(task_id, post_constraint)
+            logger.info(f"[{task_id}] 后置约束: {post_constraint[:80]}...")
+        else:
+            logger.warning(f"[{task_id}] 未提取到后置约束")
+
+        # 解析 25 镜
+        scene_list = self._parse_template_storyboard(storyboard_text)
         if not scene_list:
-            raise LLMAPIError("分镜脚本解析失败，请重试")
+            raise LLMAPIError("分镜提示词解析失败")
+
+        logger.info(f"[{task_id}] 分镜解析完成: {len(scene_list)} 个镜头")
+
+        if len(scene_list) != 25:
+            logger.warning(
+                f"[{task_id}] ⚠️ 解析到 {len(scene_list)} 镜（期望 25），"
+                "非致命继续，可检查 LLM 返回质量"
+            )
 
         self._save_storyboards(task_id, scene_list)
+        self._update_status(task_id, "running", progress=78)
 
-        # ── 阶段 5-6：媒体链路（文生视频/图生视频 + FFmpeg 拼接）──
+        # ── 阶段 3-4：媒体链路（文生视频/图生视频 + FFmpeg 拼接）──
         video_paths = []
         if settings.auto_media_pipeline:
             video_paths = await self._run_storyboard_to_video(task_id, scene_list)
-            await self._run_composite(task_id, video_paths, None, scene_list, character_list)
+            await self._run_composite(task_id, video_paths, None, scene_list, [])
 
         # ── 完成 ──
         self._update_status(task_id, "success", progress=100)
-        summary = f"大纲1篇, 角色{len(character_list)}个, 分镜{len(scene_list)}个"
+        summary = f"25镜分镜提示词, 分镜{len(scene_list)}个"
         if settings.auto_media_pipeline:
             summary += f", 视频{len(video_paths)}段"
         logger.info(f"[{task_id}] ✅ 级联任务完成: {summary}")
@@ -214,8 +210,201 @@ class TaskManager:
         return str(exc)
 
     # ------------------------------------------------------------------
-    # Markdown 解析
+    # 全局前缀管理
     # ------------------------------------------------------------------
+
+    @staticmethod
+    def _extract_global_prefix(raw_text: str) -> str:
+        """从 LLM 输出中提取 GLOBAL_PREFIX 行"""
+        match = re.search(r"GLOBAL_PREFIX[：:]\s*(.+)", raw_text)
+        if match:
+            return match.group(1).strip()
+        # 兜底：尝试查找第一行是否为风格描述
+        first_line = raw_text.strip().split("\n")[0].strip()
+        if first_line.startswith("日式") or "动漫" in first_line:
+            return first_line
+        return ""
+
+    @staticmethod
+    def _save_global_prefix(task_id: str, prefix: str) -> None:
+        """将全局前缀保存到 tasks 表"""
+        db = SessionLocal()
+        try:
+            task = db.query(Task).filter(Task.id == task_id).first()
+            if task:
+                task.global_prefix = prefix
+                db.commit()
+        finally:
+            db.close()
+
+    @staticmethod
+    def _extract_post_constraint(raw_text: str) -> str:
+        """从 LLM 输出中提取 POST_CONSTRAINT 行"""
+        match = re.search(r"POST_CONSTRAINT[：:]\s*(.+)", raw_text)
+        if match:
+            return match.group(1).strip()
+        return ""
+
+    @staticmethod
+    def _save_post_constraint(task_id: str, constraint: str) -> None:
+        """将后置约束保存到 tasks 表"""
+        db = SessionLocal()
+        try:
+            task = db.query(Task).filter(Task.id == task_id).first()
+            if task:
+                task.post_constraint = constraint
+                db.commit()
+        finally:
+            db.close()
+
+    @staticmethod
+    def _get_global_prefix(task_id: str) -> str:
+        """从 tasks 表读取全局前缀"""
+        db = SessionLocal()
+        try:
+            task = db.query(Task).filter(Task.id == task_id).first()
+            return (task.global_prefix or "") if task else ""
+        finally:
+            db.close()
+
+    @staticmethod
+    def _get_post_constraint(task_id: str) -> str:
+        """从 tasks 表读取后置约束"""
+        db = SessionLocal()
+        try:
+            task = db.query(Task).filter(Task.id == task_id).first()
+            return (task.post_constraint or "") if task else ""
+        finally:
+            db.close()
+
+    # ------------------------------------------------------------------
+    # 模板格式解析（25 镜模板）
+    # ------------------------------------------------------------------
+
+    # 画质补充默认值（LLM 未输出时使用）
+    DEFAULT_QUALITY_NOTES = "金属冷光，发丝清晰，服饰道具细节完整，抗锯齿高清渲染"
+
+    @staticmethod
+    def _parse_template_storyboard(raw_text: str) -> list[dict]:
+        """
+        解析模板格式的 25 镜分镜输出。使用字段名作为分隔符（非逗号），
+        因为「画面主体人物」「场景环境」的值内部可能包含逗号。
+
+        镜像格式：
+            镜头 1，镜头景别：全景，拍摄角度：俯拍，运镜方式：缓慢推镜，
+            画面主体人物：...，场景环境：...，情绪氛围：...，
+            构图：...，画质补充：...
+
+        返回: [{"scene_number": N, "shot_size": "全景", ...}, ...]
+        """
+        results = []
+
+        # 将文本按"镜头 N"分割为独立片段
+        text = raw_text.replace("\n", " ").replace("\r", " ")
+        text = re.sub(r"(镜头\s*\d+\s*[，,])", r"\n\1", text)
+        segments = [s.strip() for s in text.split("\n") if s.strip() and s.startswith("镜头")]
+
+        # 用字段名作为分隔符提取各字段值（而非逗号，避免值内含逗号被截断）
+        FIELD_NAMES = [
+            "镜头景别", "拍摄角度", "运镜方式",
+            "画面主体人物", "场景环境", "情绪氛围",
+            "构图", "画质补充", "台词对白", "转场衔接", "镜头时长",
+        ]
+
+        def _extract(field: str, src: str) -> str:
+            """提取 `字段名：值`，到下一个字段名或文本末尾为止"""
+            delim = "|".join(FIELD_NAMES)
+            pattern = field + r"\s*[：:]\s*(.*?)(?:\s*(?:" + delim + r")\s*[：:]|\s*$)"
+            m = re.search(pattern, src)
+            if m:
+                return m.group(1).strip().rstrip("，,。.")
+            return ""
+
+        for seg in segments:
+            num_match = re.match(r"镜头\s*(\d+)", seg)
+            if not num_match:
+                continue
+            scene_num = int(num_match.group(1))
+
+            shot_size = _extract("镜头景别", seg)
+            camera_angle = _extract("拍摄角度", seg)
+            camera_movement = _extract("运镜方式", seg)
+            subject = _extract("画面主体人物", seg)
+            environment = _extract("场景环境", seg)
+            mood = _extract("情绪氛围", seg)
+            composition = _extract("构图", seg)
+            quality_notes = _extract("画质补充", seg)
+            dialogue_text = _extract("台词对白", seg)
+            transition = _extract("转场衔接", seg)
+            duration_str = _extract("镜头时长", seg)
+
+            # 解析时长（如 "6秒" → 6.0）
+            scene_duration = 6.0
+            if duration_str:
+                dur_match = re.search(r"(\d+)", duration_str)
+                if dur_match:
+                    scene_duration = max(4.0, min(float(dur_match.group(1)), 15.0))
+
+            # 跳过不完整的镜头
+            if not shot_size or not subject:
+                logger.debug(f"镜头 {scene_num} 字段不全，跳过")
+                continue
+
+            full_prompt = (
+                f"镜头 {scene_num}，镜头景别：{shot_size}，"
+                f"拍摄角度：{camera_angle}，运镜方式：{camera_movement}，"
+                f"画面主体人物：{subject}，"
+                f"场景环境：{environment}，"
+                f"情绪氛围：{mood}，"
+                f"构图：{composition}，"
+                f"画质补充：{quality_notes}"
+                + (f"，转场衔接：{transition}" if transition else "")
+            )
+
+            human_desc = (
+                f"## 镜头 {scene_num}\n\n"
+                f"- **镜头景别**：{shot_size}\n"
+                f"- **拍摄角度**：{camera_angle}\n"
+                f"- **运镜方式**：{camera_movement}\n"
+                f"- **画面主体人物**：{subject}\n"
+                f"- **场景环境**：{environment}\n"
+                f"- **情绪氛围**：{mood}\n"
+                f"- **构图**：{composition}\n"
+                f"- **画质补充**：{quality_notes}"
+                + (f"\n- **台词对白**：{dialogue_text}" if dialogue_text and dialogue_text != "@无" else "")
+                + (f"\n- **转场衔接**：{transition}" if transition else "")
+            )
+
+            results.append({
+                "scene_number": scene_num,
+                "shot_size": shot_size,
+                "camera_angle": camera_angle,
+                "camera_movement": camera_movement,
+                "subject": subject,
+                "environment": environment,
+                "mood": mood,
+                "composition": composition,
+                "quality_notes": quality_notes,
+                "transition": transition,
+                "dialogue_text": dialogue_text,
+                "duration_seconds": scene_duration,
+                "image_prompt": full_prompt,
+                "description": human_desc,
+                "global_prefix": "",
+                "scene_title": f"镜头{scene_num}",
+                "location": environment[:80],
+                "visual_description": f"{subject}，{environment}，{mood}氛围",
+            })
+
+        if results:
+            logger.info(f"字段名解析成功: {len(results)} 个镜头")
+            if len(results) != 25:
+                logger.warning(f"解析到 {len(results)} 个镜头（期望 25）")
+        else:
+            logger.warning("字段名解析无匹配，尝试回退 JSON 解析")
+            return TaskManager._parse_storyboards(raw_text)
+
+        return results
 
     @staticmethod
     def _parse_characters(markdown_text: str) -> list[dict]:
@@ -406,35 +595,59 @@ class TaskManager:
 
             # 查找已有分镜图的远程 URL，传给 MiniMax
             image_url = self._get_latest_image_url(task_id, scene_num)
+
+            # 从资产拆解中查找匹配的角色/场景/道具图片
+            asset_ref = TaskManager._get_asset_reference_for_shot(task_id, scene)
+            if not image_url and asset_ref["image_url"]:
+                image_url = asset_ref["image_url"]
             logger.info(f"[{task_id}] 分镜{scene_num}/{total} MiniMax {'图生视频' if image_url else '文生视频'}中... (进度 {base_progress}%)")
 
-            # 构建 prompt：视觉描述 + 运镜 + 音效描述
+            # 构建 prompt：全局前缀 + 模板 image_prompt + 资产参考（强约束）
+            image_prompt = scene.get("image_prompt", "")
             visual = scene.get("visual_description", "") or scene.get("description", "")
             camera = scene.get("camera_movement", "")
             action = scene.get("action_instruction", "")
             dialogue = scene.get("dialogue", "")
             location = scene.get("location", "")
-            # 取分镜脚本配置的时长，默认 6 秒，限制 4-15 秒
             scene_duration = int(scene.get("duration_seconds", 6) or 6)
             scene_duration = max(4, min(scene_duration, 15))
 
-            sound_clause = ""
-            if dialogue:
-                sound_clause = f"Sound: characters speaking naturally, ambient {location or 'scene'} atmosphere"
+            global_prefix = TaskManager._get_global_prefix(task_id)
 
-            prompt_parts = []
-            # 日漫风格前缀
-            if settings.image_style:
-                prompt_parts.append(f"Style: {settings.image_style}")
-            if camera:
-                prompt_parts.append(f"Camera: {camera}")
-            if action:
-                prompt_parts.append(f"Motion: {action}")
-            if visual:
-                prompt_parts.append(visual[:1500])
-            if sound_clause:
-                prompt_parts.append(sound_clause)
-            prompt = ". ".join(prompt_parts)[:2000]
+            if image_prompt and image_prompt.strip():
+                prompt_parts = []
+                if global_prefix:
+                    prompt_parts.append(global_prefix[:800])
+                elif settings.image_style:
+                    prompt_parts.append(f"Style: {settings.image_style}")
+                prompt_parts.append(image_prompt[:1500])
+                if asset_ref["ref_text"]:
+                    prompt_parts.append(f"Design reference: {asset_ref['ref_text']}")
+                postfix = TaskManager._get_post_constraint(task_id)
+                if postfix:
+                    prompt_parts.append(postfix[:500])
+                prompt = "，".join(prompt_parts)[:3000]
+            else:
+                sound_clause = ""
+                if dialogue:
+                    sound_clause = f"Sound: characters speaking naturally, ambient {location or 'scene'} atmosphere"
+                prompt_parts = []
+                if global_prefix:
+                    prompt_parts.append(global_prefix[:800])
+                elif settings.image_style:
+                    prompt_parts.append(f"Style: {settings.image_style}")
+                if camera:
+                    prompt_parts.append(f"Camera: {camera}")
+                if action:
+                    prompt_parts.append(f"Motion: {action}")
+                if visual:
+                    prompt_parts.append(visual[:1200])
+                if sound_clause:
+                    prompt_parts.append(sound_clause)
+                postfix = TaskManager._get_post_constraint(task_id)
+                if postfix:
+                    prompt_parts.append(postfix[:500])
+                prompt = ". ".join(prompt_parts)[:3000]
 
             for retry in range(MAX_RETRIES + 1):
                 asset = self._create_media_asset(task_id, "video", scene_num, prompt)
@@ -532,15 +745,23 @@ class TaskManager:
 
         provider = settings.image_provider
 
+        # ── 强制注入全局前缀 ──
+        global_prefix = TaskManager._get_global_prefix(task_id)
+
         try:
             if provider == "gpt-image-2":
-                # GPT-Image-2: 注入角色外貌到 prompt → 翻译英文 → 发送
+                # GPT-Image-2: 全局前缀（日漫风）+ 角色外貌 → 翻译英文 → 发送
                 prompt_parts = []
-                # 强制 2D 日漫风格（英文原样发出，放在最前面不被翻译削弱）
-                prompt_parts.append(
-                    "REQUIRED STYLE: 2D anime, Japanese animation, cel-shaded, "
-                    "flat colors, hand-drawn look, NO 3D rendering, NO photorealism."
-                )
+                if global_prefix:
+                    prompt_parts.append(
+                        f"REQUIRED STYLE: 2D Japanese anime, cel-shaded, hand-drawn look. "
+                        f"Style guide: {global_prefix[:500]}"
+                    )
+                else:
+                    prompt_parts.append(
+                        "REQUIRED STYLE: 2D anime, Japanese animation, cel-shaded, "
+                        "flat colors, hand-drawn look, NO 3D rendering, NO photorealism."
+                    )
                 if settings.image_style:
                     prompt_parts.append(f"Style detail: {settings.image_style}")
                 if char_appearance:
@@ -557,12 +778,14 @@ class TaskManager:
                     english_prompt = full_prompt
                 path, remote_url = await asyncio.wait_for(
                     gpt_image_service.generate_scene_image(task_id, scene_num, english_prompt),
-                    timeout=300,
+                    timeout=600,
                 )
             else:
                 remote_url = None
-                # MiniMax image-01（默认）: subject_reference 图像锚定方案
-                if settings.image_style:
+                # MiniMax image-01（默认）: 全局前缀 + subject_reference 图像锚定方案
+                if global_prefix:
+                    prompt = f"{global_prefix}. {prompt}"
+                elif settings.image_style:
                     prompt = f"{settings.image_style}. {prompt}"
                 ref_image_url = None
                 if char_names and char_appearance:
@@ -583,8 +806,8 @@ class TaskManager:
             self._update_media_asset(asset.id, "success", file_path=path, file_url=remote_url)
             return {"status": "success", "file_path": path, "asset_id": asset.id}
         except asyncio.TimeoutError:
-            self._update_media_asset(asset.id, "failed", error="图片生成超时（300s）")
-            return {"status": "failed", "error": "图片生成超时，请重试"}
+            self._update_media_asset(asset.id, "failed", error="图片生成超时（600s），请稍后重试")
+            return {"status": "failed", "error": "图片生成超时，请稍后重试"}
         except Exception as e:
             err = str(e)[:500]
             self._update_media_asset(asset.id, "failed", error=err)
@@ -603,26 +826,51 @@ class TaskManager:
 
         self._cleanup_asset(task_id, scene_num, "video")
 
-        # 查找已有分镜图的远程 URL
+        # 查找已有分镜图的远程 URL，同时查资产拆解图片
         image_url = self._get_latest_image_url(task_id, scene_num)
+        asset_ref = TaskManager._get_asset_reference_for_shot(task_id, scene)
+        if not image_url and asset_ref["image_url"]:
+            image_url = asset_ref["image_url"]
 
-        # 构造 prompt（注入日漫风格）
-        sound = ""
-        if dialogue:
-            sound = f"Sound: characters speaking naturally, ambient {location or 'scene'} atmosphere"
+        # 构造 prompt（全局前缀 + 模板 image_prompt + 资产参考，强约束）
+        global_prefix = TaskManager._get_global_prefix(task_id)
+        image_prompt = scene.get("image_prompt", "")
 
-        parts = []
-        if settings.image_style:
-            parts.append(f"Style: {settings.image_style}")
-        if camera:
-            parts.append(f"Camera: {camera}")
-        if action:
-            parts.append(f"Motion: {action}")
-        if visual:
-            parts.append(visual[:1500])
-        if sound:
-            parts.append(sound)
-        prompt = ". ".join(parts)[:2000]
+        if image_prompt and image_prompt.strip():
+            parts = []
+            if global_prefix:
+                parts.append(global_prefix[:800])
+            elif settings.image_style:
+                parts.append(f"Style: {settings.image_style}")
+            parts.append(image_prompt[:1500])
+            if asset_ref["ref_text"]:
+                parts.append(f"Design reference: {asset_ref['ref_text']}")
+            postfix = TaskManager._get_post_constraint(task_id)
+            if postfix:
+                parts.append(postfix[:500])
+            prompt = "，".join(parts)[:3000]
+        else:
+            # 旧格式兜底
+            sound = ""
+            if dialogue:
+                sound = f"Sound: characters speaking naturally, ambient {location or 'scene'} atmosphere"
+            parts = []
+            if global_prefix:
+                parts.append(global_prefix[:800])
+            elif settings.image_style:
+                parts.append(f"Style: {settings.image_style}")
+            if camera:
+                parts.append(f"Camera: {camera}")
+            if action:
+                parts.append(f"Motion: {action}")
+            if visual:
+                parts.append(visual[:1200])
+            if sound:
+                parts.append(sound)
+            postfix = TaskManager._get_post_constraint(task_id)
+            if postfix:
+                parts.append(postfix[:500])
+            prompt = ". ".join(parts)[:3000]
 
         asset = self._create_media_asset(task_id, "video", scene_num, prompt)
         try:
@@ -744,6 +992,7 @@ class TaskManager:
     ) -> dict:
         """
         使用 GPT-Image-2 生成导演流程图 —— 所有分镜合成一张视觉规划图。
+        参考资产拆解中的角色/场景/道具图片和描述。
         返回 {status, file_path, error}
         """
         if settings.image_provider != "gpt-image-2":
@@ -754,23 +1003,119 @@ class TaskManager:
 
         logger.info(f"[{task_id}] 生成导演流程图 ({len(scene_list)} 个分镜)")
 
+        # 获取资产数据作为参考
+        asset_refs = self._get_asset_references(task_id)
+        global_prefix = TaskManager._get_global_prefix(task_id)
+
         self._cleanup_asset(task_id, None, "flowchart")
         asset = self._create_media_asset(task_id, "flowchart", None, "director storyboard flowchart")
 
         try:
             path = await asyncio.wait_for(
-                gpt_image_service.generate_storyboard_flowchart(task_id, scene_list),
-                timeout=300,
+                gpt_image_service.generate_storyboard_flowchart(
+                    task_id, scene_list, asset_refs, global_prefix
+                ),
+                timeout=600,
             )
             self._update_media_asset(asset.id, "success", file_path=path)
             return {"status": "success", "file_path": path, "asset_id": asset.id}
         except asyncio.TimeoutError:
-            self._update_media_asset(asset.id, "failed", error="流程图生成超时（300s）")
-            return {"status": "failed", "error": "流程图生成超时，请重试"}
+            self._update_media_asset(asset.id, "failed", error="流程图生成超时（600s），GPT-Image-2 API 响应过慢，请稍后重试")
+            return {"status": "failed", "error": "流程图生成超时，请稍后重试"}
         except Exception as e:
             err = str(e)[:500]
             self._update_media_asset(asset.id, "failed", error=err)
             return {"status": "failed", "error": err}
+
+    @staticmethod
+    def _get_asset_reference_for_shot(task_id: str, shot: dict) -> dict:
+        """
+        为单个分镜查找资产拆解中的参考图片和描述。
+        使用分词匹配（2字及以上词组），优先角色图片。
+        返回 {"image_url": str|None, "ref_text": str}
+        """
+        from app.models.asset import AssetItem
+
+        subject = shot.get("subject", "") or ""
+        environment = shot.get("environment", "") or ""
+        combined_text = f"{subject} {environment}"
+
+        def _name_matches(asset_name: str, text: str) -> bool:
+            """分词匹配：提取资产名中2字及以上词组，任一词组在文本中出现则匹配"""
+            name = asset_name.strip()
+            if not name:
+                return False
+            # 精确匹配优先
+            if name in text:
+                return True
+            # 分词：取所有2字及以上连续子串
+            for length in range(len(name), 1, -1):
+                for i in range(len(name) - length + 1):
+                    token = name[i:i+length]
+                    if len(token) >= 2 and token in text:
+                        return True
+            return False
+
+        db = SessionLocal()
+        try:
+            assets = db.query(AssetItem).filter(
+                AssetItem.task_id == task_id,
+                AssetItem.image_status == "success",
+            ).all()
+
+            image_url = None
+            char_url = None  # 角色图片单独记录
+            ref_parts = []
+
+            for a in assets:
+                name = a.name or ""
+                if not name or not _name_matches(name, combined_text):
+                    continue
+
+                if a.image_url:
+                    if not image_url:
+                        image_url = a.image_url  # 第一个匹配图
+                    if a.category == "character" and not char_url:
+                        char_url = a.image_url   # 第一个角色图
+
+                if a.image_prompt:
+                    ref_parts.append(f"{a.name}: {a.image_prompt[:100]}")
+                elif a.description:
+                    ref_parts.append(f"{a.name}: {a.description[:100]}")
+
+            # 优先用角色图，兜底用第一个匹配图
+            image_url = char_url or image_url
+
+            ref_text = " | ".join(ref_parts[:8])[:1000] if ref_parts else ""
+            return {"image_url": image_url, "ref_text": ref_text}
+        finally:
+            db.close()
+
+    @staticmethod
+    def _get_asset_references(task_id: str) -> str:
+        """从资产拆解表中获取角色/场景/道具描述，用于流程图 prompt 参考"""
+        from app.models.asset import AssetItem
+        db = SessionLocal()
+        try:
+            assets = db.query(AssetItem).filter(
+                AssetItem.task_id == task_id
+            ).order_by(AssetItem.category, AssetItem.name).all()
+
+            if not assets:
+                return ""
+
+            lines = []
+            for cat, label in [("character", "角色"), ("scene", "场景"), ("prop", "道具")]:
+                cat_assets = [a for a in assets if a.category == cat]
+                if not cat_assets:
+                    continue
+                lines.append(f"{label}设计参考：")
+                for a in cat_assets[:8]:  # 每类最多 8 个
+                    desc = (a.description or a.name)[:80]
+                    lines.append(f"  {a.name}: {desc}")
+            return "\n".join(lines)[:2000]
+        finally:
+            db.close()
 
     @staticmethod
     async def _ensure_character_ref(
@@ -1011,58 +1356,61 @@ class TaskManager:
 
     @staticmethod
     def _save_storyboards(task_id: str, scene_list: list[dict]) -> None:
-        """逐条存入结构化分镜，description 存储人类可读短文"""
+        """逐条存入分镜，优先使用模板字段，兼容旧 JSON 字段"""
         db = SessionLocal()
         try:
             for scene_data in scene_list:
-                # 构建人类可读的 description 文本（不再存 JSON 代码）
-                desc_parts = []
-                title = scene_data.get("scene_title", "")
-                location = scene_data.get("location", "")
+                scene_num = scene_data["scene_number"]
+
+                # 模板字段（新）
+                shot_size = scene_data.get("shot_size", "")
+                camera_angle = scene_data.get("camera_angle", "")
+                subject = scene_data.get("subject", "")
+                environment = scene_data.get("environment", "")
+                mood = scene_data.get("mood", "")
+                composition = scene_data.get("composition", "")
+                quality_notes = scene_data.get("quality_notes", "")
+
+                # 旧字段兼容
+                title = scene_data.get("scene_title", f"镜头{scene_num}")
+                location = scene_data.get("location", "") or environment[:200]
                 time_of_day = scene_data.get("time_of_day", "")
-                camera = scene_data.get("camera_movement", "")
                 chars = scene_data.get("characters_in_scene", "")
-                visual = scene_data.get("visual_description", "")
+                camera_movement = scene_data.get("camera_movement", "")
                 dialogue = scene_data.get("dialogue", "")
+                visual = scene_data.get("visual_description", "")
+                image_prompt = scene_data.get("image_prompt", "")
+                duration = scene_data.get("duration_seconds", 6.0)
 
-                # 标题 + 场景信息
-                header = f"## {title}" if title else f"## 分镜{scene_data['scene_number']}"
-                if location or time_of_day:
-                    loc_info = f"{location} · {time_of_day}" if location and time_of_day else (location or time_of_day)
-                    header += f"\n*{loc_info}*"
-                desc_parts.append(header)
-
-                # 出场角色
-                if chars:
-                    desc_parts.append(f"\n**出场角色**：{chars}")
-
-                # 画面描述（核心内容）
-                if visual:
-                    desc_parts.append(f"\n{visual}")
-
-                # 台词
-                if dialogue:
-                    desc_parts.append(f"\n> {dialogue.replace(chr(10), chr(10) + '> ')}")
-
-                # 运镜
-                if camera:
-                    desc_parts.append(f"\n🎥 运镜：{camera}")
-
-                readable_desc = "\n".join(desc_parts)
+                # 人类可读描述
+                if scene_data.get("description"):
+                    desc = scene_data["description"]
+                else:
+                    desc = image_prompt or json.dumps(scene_data, ensure_ascii=False)
 
                 storyboard = Storyboard(
                     task_id=task_id,
-                    scene_number=scene_data["scene_number"],
+                    scene_number=scene_num,
                     scene_title=title,
                     location=location,
                     time_of_day=time_of_day,
                     characters_in_scene=chars,
-                    camera_movement=camera,
+                    camera_movement=camera_movement,
                     dialogue=dialogue,
                     visual_description=visual,
-                    image_prompt=scene_data.get("image_prompt", ""),
-                    duration_seconds=scene_data.get("duration_seconds", 5.0),
-                    description=readable_desc,
+                    image_prompt=image_prompt,
+                    duration_seconds=duration,
+                    description=desc,
+                    # 模板新字段
+                    shot_size=shot_size,
+                    camera_angle=camera_angle,
+                    subject=subject,
+                    environment=environment,
+                    mood=mood,
+                    composition=composition,
+                    quality_notes=quality_notes,
+                    transition=scene_data.get("transition", ""),
+                    dialogue_text=scene_data.get("dialogue_text", ""),
                 )
                 db.add(storyboard)
             db.commit()

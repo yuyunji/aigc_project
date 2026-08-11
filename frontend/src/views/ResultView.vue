@@ -40,46 +40,39 @@
         </div>
       </el-card>
 
-      <!-- Tab 切换 -->
+      <!-- 内容 Tabs -->
       <el-card shadow="never" class="content-card">
-        <el-tabs v-model="activeTab" type="card" class="result-tabs">
-          <el-tab-pane name="outline">
-            <template #label><span>📋 剧本大纲</span></template>
-            <OutlineTab :content="outline?.content" :loading="outlineLoading" />
-          </el-tab-pane>
-
-          <el-tab-pane name="characters">
-            <template #label>
-              <span>🎭 人物角色</span>
-              <el-tag v-if="characters.length" size="small" effect="plain" style="margin-left:6px">{{ characters.length }}</el-tag>
-            </template>
-            <CharacterTab :characters="characters" :loading="charactersLoading" />
-          </el-tab-pane>
-
+        <el-tabs v-model="activeTab" type="card">
           <el-tab-pane name="storyboards">
             <template #label>
               <span>🎬 分镜脚本</span>
               <el-tag v-if="storyboards.length" size="small" effect="plain" style="margin-left:6px">{{ storyboards.length }}</el-tag>
             </template>
-            <div class="storyboard-toolbar">
-              <el-button
-                type="warning"
-                size="default"
-                :loading="batchImageGenerating"
-                @click="onGenerateAllImages"
-              >
-                🎬 生成导演分镜
-              </el-button>
-              <span class="toolbar-hint">一键为所有分镜生成日漫风格画面</span>
-            </div>
             <StoryboardCard
               :scenes="storyboards"
               :loading="storyboardsLoading"
               :taskId="selectedTaskId"
               :mediaAssets="mediaAssets"
-              @generate-image="onGenerateImage"
               @generate-video="onGenerateVideo"
               @retry="onRetryScene"
+            />
+          </el-tab-pane>
+
+          <el-tab-pane name="assets">
+            <template #label>
+              <span>🎒 资产拆解</span>
+              <el-tag v-if="assets.length" size="small" effect="plain" style="margin-left:6px">{{ assets.length }}</el-tag>
+            </template>
+            <AssetBreakdownTab
+              :assets="assets"
+              :loading="assetsLoading"
+              :extracting="extracting"
+              @extract="onExtractAssets"
+              @generate-image="onGenerateAssetImage"
+              @upload-image="onUploadAssetImage"
+              @delete-asset="onDeleteAsset"
+              @create-asset="onCreateAsset"
+              @update-asset="onUpdateAsset"
             />
           </el-tab-pane>
         </el-tabs>
@@ -92,11 +85,11 @@
 import { ref, computed, onMounted, onUnmounted } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { ElMessage } from "element-plus";
-import { getTaskList, getOutline, getCharacters, getStoryboards } from "../api/task";
-import { getVideos, getImages, generateSceneImage, generateSceneVideo, generateAllImages, retryScene } from "../api/media";
-import OutlineTab from "../components/OutlineTab.vue";
-import CharacterTab from "../components/CharacterTab.vue";
+import { getTaskList, getStoryboards } from "../api/task";
+import { getVideos, getImages, generateSceneVideo, retryScene } from "../api/media";
+import { extractAssets, getAssets, createAsset, updateAsset, deleteAsset, generateAssetImage, uploadAssetImage } from "../api/asset";
 import StoryboardCard from "../components/StoryboardCard.vue";
+import AssetBreakdownTab from "../components/AssetBreakdownTab.vue";
 
 const route = useRoute();
 const router = useRouter();
@@ -104,15 +97,15 @@ const router = useRouter();
 const selectedTaskId = ref("");
 const completedTasks = ref([]);
 const tasksLoading = ref(false);
-const outline = ref(null);
-const characters = ref([]);
 const storyboards = ref([]);
 const mediaAssets = ref([]);
-const outlineLoading = ref(false);
-const charactersLoading = ref(false);
 const storyboardsLoading = ref(false);
-const activeTab = ref("outline");
-const batchImageGenerating = ref(false);
+const activeTab = ref("storyboards");
+
+// 资产拆解
+const assets = ref([]);
+const assetsLoading = ref(false);
+const extracting = ref(false);
 
 // Pipeline 进度计算
 const pipelineStages = computed(() => {
@@ -120,9 +113,7 @@ const pipelineStages = computed(() => {
   if (!p) return [];
   return [
     { label: "分片预处理", done: p.progress >= 20, active: p.progress >= 10 && p.progress < 20 },
-    { label: "剧本大纲", done: p.progress >= 45, active: p.progress >= 25 && p.progress < 45 },
-    { label: "人物角色", done: p.progress >= 70, active: p.progress >= 50 && p.progress < 70 },
-    { label: "分镜脚本", done: p.progress >= 78, active: p.progress >= 70 && p.progress < 78 },
+    { label: "AI分镜师 25镜拆解", done: p.progress >= 78, active: p.progress >= 25 && p.progress < 78 },
   ];
 });
 
@@ -142,16 +133,15 @@ async function loadCompletedTasks() {
 }
 
 async function onTaskSelect(taskId) {
-  if (!taskId) { outline.value = null; characters.value = []; storyboards.value = []; return; }
+  if (!taskId) { storyboards.value = []; assets.value = []; return; }
   await loadResults(taskId);
 }
 
 async function loadResults(taskId) {
   await Promise.allSettled([
-    (async () => { outlineLoading.value = true; try { const r = await getOutline(taskId); outline.value = r.data; } catch(e){} finally { outlineLoading.value = false; } })(),
-    (async () => { charactersLoading.value = true; try { const r = await getCharacters(taskId); characters.value = r.data || []; } catch(e){} finally { charactersLoading.value = false; } })(),
     (async () => { storyboardsLoading.value = true; try { const r = await getStoryboards(taskId); storyboards.value = r.data || []; } catch(e){} finally { storyboardsLoading.value = false; } })(),
     (async () => { try { const [i, v] = await Promise.all([getImages(taskId), getVideos(taskId)]); mediaAssets.value = [...(i.data.assets||[]), ...(v.data.assets||[])]; } catch(e){} })(),
+    (async () => { await loadAssets(taskId); })(),
   ]);
 }
 
@@ -165,29 +155,103 @@ function pollUntilDone(pollCount = 0) {
   }, 3000);
 }
 
-async function onGenerateImage(sn) {
-  const provider = localStorage.getItem("aigc_image_provider") || "minimax";
-  try { await generateSceneImage(selectedTaskId.value, sn, provider); ElMessage.success(`分镜${sn} 图片生成已启动`); pollUntilDone(); } catch(e){}
-}
 async function onGenerateVideo(sn) {
   const provider = localStorage.getItem("aigc_video_provider") || "minimax-h3";
   try { await generateSceneVideo(selectedTaskId.value, sn, provider); ElMessage.success(`分镜${sn} 视频生成已启动`); pollUntilDone(); } catch(e){}
 }
 async function onRetryScene(sn) { try { await retryScene(selectedTaskId.value, sn); ElMessage.success(`分镜${sn} 已重置`); await loadResults(selectedTaskId.value); } catch(e){} }
 
-async function onGenerateAllImages() {
-  batchImageGenerating.value = true;
+
+// ── 资产拆解 ──
+
+async function loadAssets(taskId) {
+  assetsLoading.value = true;
   try {
-    const res = await generateAllImages(selectedTaskId.value);
-    ElMessage.success(`已启动 ${res.data.count} 个分镜的图片生成`);
-    pollUntilDone();
+    const r = await getAssets(taskId);
+    assets.value = r.data.assets || [];
+  } catch (e) { /* empty */ }
+  finally { assetsLoading.value = false; }
+}
+
+async function onExtractAssets() {
+  extracting.value = true;
+  try {
+    const r = await extractAssets(selectedTaskId.value);
+    ElMessage.success(`AI 提取完成：${r.data.extracted} 个资产`);
+    await loadAssets(selectedTaskId.value);
   } catch (e) { /* global handler */ }
-  finally { batchImageGenerating.value = false; }
+  finally { extracting.value = false; }
+}
+
+async function onGenerateAssetImage(assetId) {
+  try {
+    await generateAssetImage(selectedTaskId.value, assetId);
+    ElMessage.success("图片生成已启动");
+    pollAssetImage(assetId, 0);
+  } catch (e) { /* global handler */ }
+}
+
+async function silentRefreshAssets() {
+  try {
+    const r = await getAssets(selectedTaskId.value);
+    if (r.data && r.data.assets) {
+      // 无感更新：直接替换数据，不触发 loading 状态
+      assets.value = r.data.assets;
+    }
+  } catch (e) { /* silent */ }
+}
+
+function pollAssetImage(assetId, count) {
+  if (count >= 30) return;
+  setTimeout(async () => {
+    await silentRefreshAssets();
+    const found = assets.value.find(a => a.id === assetId);
+    if (found && found.image_status === "success") {
+      ElMessage.success(`${found.name} 图片生成完成`);
+      return;
+    }
+    if (found && found.image_status === "failed") {
+      ElMessage.error(`${found.name} 生成失败: ${found.error_message || "未知错误"}`);
+      return;
+    }
+    pollAssetImage(assetId, count + 1);
+  }, 8000);
+}
+
+async function onUploadAssetImage(assetId, file) {
+  try {
+    await uploadAssetImage(selectedTaskId.value, assetId, file);
+    ElMessage.success("图片上传成功");
+    await loadAssets(selectedTaskId.value);
+  } catch (e) { /* global handler */ }
+}
+
+async function onDeleteAsset(assetId) {
+  try {
+    await deleteAsset(selectedTaskId.value, assetId);
+    ElMessage.success("资产已删除");
+    await loadAssets(selectedTaskId.value);
+  } catch (e) { /* global handler */ }
+}
+
+async function onCreateAsset(data) {
+  try {
+    await createAsset(selectedTaskId.value, data);
+    ElMessage.success("资产已添加");
+    await loadAssets(selectedTaskId.value);
+  } catch (e) { /* global handler */ }
+}
+
+async function onUpdateAsset(assetId, data) {
+  try {
+    await updateAsset(selectedTaskId.value, assetId, data);
+    ElMessage.success("资产已更新");
+    await loadAssets(selectedTaskId.value);
+  } catch (e) { /* global handler */ }
 }
 
 onMounted(() => {
   loadCompletedTasks();
-  // 页面恢复时自动检查是否有未完成的生成任务，恢复轮询
   document.addEventListener("visibilitychange", () => {
     if (!document.hidden && selectedTaskId.value) {
       loadResults(selectedTaskId.value).then(() => {
@@ -236,5 +300,20 @@ onUnmounted(() => {
   :deep(.el-tabs__header) { margin-bottom: var(--space-lg); }
 }
 
+.storyboard-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: var(--space-lg);
+}
+
+.toolbar-hint {
+  font-size: 12px;
+  color: var(--color-text-tertiary);
+  margin-left: 8px;
+  font-weight: 400;
+}
+
 @media (max-width: 640px) { .task-select { width: 100%; } }
+
 </style>

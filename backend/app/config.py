@@ -7,17 +7,20 @@ from pydantic_settings import BaseSettings
 
 class Settings(BaseSettings):
     # ── LLM 通用配置 ──
-    llm_provider: str = "deepseek"              # anthropic | deepseek
+    llm_provider: str = "deepseek"              # anthropic | deepseek | doubao
     anthropic_api_key: str = ""
     anthropic_base_url: str = ""
     anthropic_model: str = "claude-sonnet-5-20250915"
     deepseek_api_key: str = ""
     deepseek_base_url: str = "https://api.deepseek.com"
     deepseek_model: str = "deepseek-chat"
+    doubao_api_key: str = ""
+    doubao_base_url: str = "https://ark.cn-beijing.volces.com/api/v3"
+    doubao_model: str = "doubao-seed-2-1-turbo-260628"
     llm_max_retries: int = 2
     llm_retry_base_delay: float = 2.0
-    llm_call_timeout: int = 120
-    task_total_timeout: int = 600
+    llm_call_timeout: int = 300
+    task_total_timeout: int = 1200
 
     # 服务
     host: str = "127.0.0.1"

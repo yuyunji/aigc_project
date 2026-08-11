@@ -54,18 +54,17 @@ class GptImageService:
     # ------------------------------------------------------------------
 
     async def generate_storyboard_flowchart(
-        self, task_id: str, scene_list: list[dict]
+        self, task_id: str, scene_list: list[dict],
+        asset_refs: str = "", global_prefix: str = "",
     ) -> str:
         """
-        生成导演流程图 —— 将所有分镜信息融合为一张视觉化的分镜规划图。
-
-        每个分镜的 visual_description、camera_movement、characters 等
-        被编织成一个综合 prompt，GPT-Image-2 生成带场景编号和箭头的
-        电影级故事板全景图。
+        生成导演流程图 —— 25 镜 5×5 宫格，强制日漫风格，参考资产拆解。
 
         Args:
-            task_id:    任务 ID
-            scene_list: 分镜列表 [{"scene_number": 1, "scene_title": "...", ...}, ...]
+            task_id:       任务 ID
+            scene_list:    分镜列表
+            asset_refs:    资产拆解参考（角色/场景/道具描述）
+            global_prefix: 全局日漫风格前缀
 
         Returns:
             本地图片文件路径
@@ -73,7 +72,7 @@ class GptImageService:
         if not self.api_key:
             raise LLMAPIError("OpenAI API Key 未配置，请在 .env 中设置 OPENAI_API_KEY")
 
-        prompt = self._build_flowchart_prompt(scene_list)
+        prompt = self._build_flowchart_prompt(scene_list, asset_refs, global_prefix)
         logger.info(
             f"[{task_id}] 导演流程图 prompt 已构建 ({len(prompt)} 字符, {len(scene_list)} 个分镜)"
         )
@@ -86,7 +85,9 @@ class GptImageService:
         logger.info(f"[{task_id}] 导演流程图已下载: {local_path}")
         return local_path
 
-    def _build_flowchart_prompt(self, scene_list: list[dict]) -> str:
+    def _build_flowchart_prompt(
+        self, scene_list: list[dict], asset_refs: str = "", global_prefix: str = ""
+    ) -> str:
         """
         将分镜列表编织为导演流程图 prompt。
 
@@ -101,44 +102,38 @@ class GptImageService:
             chars = scene.get("characters_in_scene", "")
             visual = scene.get("visual_description", "") or scene.get("description", "")
 
-            # 每个分镜压缩为一句描述
-            parts = [f"Scene {num}"]
-            if title:
-                parts.append(f": {title}")
-            if camera:
-                parts.append(f" [{camera}]")
-            if chars:
-                parts.append(f" | Characters: {chars}")
+            # 每个分镜压缩为极简关键词（25 镜宫格图）
+            short_desc = ""
             if visual:
-                # 每个分镜只用前 60 字关键描述
-                parts.append(f" | {visual[:60]}")
+                short_desc = visual[:40]
+            elif scene.get("subject"):
+                short_desc = scene.get("subject", "")[:40]
+            scene_descriptions.append(f"#{num}: {short_desc}")
 
-            scene_descriptions.append("".join(parts))
+        # 25 镜 5x5 宫格布局
+        total = len(scene_list)
+        joined = ", ".join(scene_descriptions)
 
-        # 限制场景数防止 prompt 超长
-        max_scenes = 6
-        if len(scene_descriptions) > max_scenes:
-            scene_descriptions = scene_descriptions[:max_scenes]
-            scene_descriptions.append(
-                f"... (共 {len(scene_list)} 个分镜，仅展示前 {max_scenes})"
-            )
-
-        joined = "\n".join(scene_descriptions)
-
-        prompt = (
-            "Professional film director's storyboard flowchart. "
-            "A cinematic visual storyboard layout showing multiple scenes arranged "
-            "in sequential order from left to right, top to bottom, with arrow connectors "
-            "between scenes. Each scene panel contains the visual elements described. "
-            "Movie storyboard style, professional cinematography composition, "
-            "golden ratio layout, clean panel borders with scene numbers, "
-            "cinematic color grading, film grain texture, high production value. "
-            "The overall layout should look like a professional director's pre-visualization board.\n\n"
-            f"Scenes to include:\n{joined}"
+        # 强制日漫风格前缀
+        style = global_prefix[:300] if global_prefix else (
+            "2D Japanese anime, cel-shaded, hand-drawn look, "
+            "vibrant colors, clean linework, cinematic lighting"
         )
 
-        # GPT-Image-2 prompt 最长 4000 字符，截断保底
-        return prompt[:3800]
+        # 资产参考
+        asset_section = ""
+        if asset_refs and asset_refs.strip():
+            asset_section = f"\n\nDesign references (use these character/scene/prop designs):\n{asset_refs[:1200]}"
+
+        return (
+            f"REQUIRED STYLE: {style}. "
+            f"Professional anime storyboard grid, 5x5 layout with {total} numbered panels. "
+            f"Each panel shows a key visual moment with its scene number. "
+            f"Consistent character designs across all panels, same art style throughout. "
+            f"No watermarks, no text except scene numbers in corner.\n\n"
+            f"Scenes: {joined[:800]}"
+            f"{asset_section}"
+        )[:3000]
 
     # ------------------------------------------------------------------
     # 底层 API 调用
@@ -163,7 +158,7 @@ class GptImageService:
         logger.debug(f"GPT-Image-2 请求: {url} model={self.model} size={payload['size']} prompt_len={len(prompt)}")
 
         try:
-            async with httpx.AsyncClient(timeout=300) as client:
+            async with httpx.AsyncClient(timeout=600) as client:
                 resp = await client.post(url, json=payload, headers=headers)
                 data = resp.json()
         except Exception as e:
@@ -215,6 +210,33 @@ class GptImageService:
         with open(filepath, "wb") as f:
             f.write(resp.content)
         return filepath
+
+
+    async def _download_asset(
+        self, task_id: str, asset_name: str, image_url: str
+    ) -> str:
+        """下载资产图片到 media/{task_id}/assets/"""
+        import re
+        safe_name = re.sub(r"[^\w一-鿿_-]", "_", asset_name)[:50]
+        output_dir = os.path.join(self.media_dir, task_id, "assets")
+        os.makedirs(output_dir, exist_ok=True)
+        filepath = os.path.join(output_dir, f"{safe_name}.png")
+
+        async with httpx.AsyncClient(timeout=60) as client:
+            resp = await client.get(image_url)
+            resp.raise_for_status()
+        with open(filepath, "wb") as f:
+            f.write(resp.content)
+        return filepath
+
+    async def generate_asset_image(
+        self, task_id: str, asset_name: str, prompt: str
+    ) -> tuple[str, str]:
+        """为资产生成参考图，返回 (local_path, remote_url)"""
+        image_url = await self._generate(prompt, settings.openai_image_size)
+        local_path = await self._download_asset(task_id, asset_name, image_url)
+        logger.info(f"[{task_id}] 资产图片已生成: {asset_name}")
+        return local_path, image_url
 
 
 # 全局单例

@@ -163,5 +163,89 @@ class VideoComposer:
         logger.info(f"[{task_id}] FFmpeg {stage} 完成")
 
 
+    async def composite_with_transitions(
+        self,
+        task_id: str,
+        video_paths: list[str],
+        transitions: list[str],
+    ) -> str:
+        """
+        带转场效果的视频拼接。
+
+        Args:
+            video_paths: 视频片段路径列表
+            transitions: 转场类型列表（与视频一一对应，最后一个镜头无转场）
+
+        Returns:
+            合成视频路径
+        """
+        output_dir = os.path.join(self.media_dir, task_id, "output")
+        os.makedirs(output_dir, exist_ok=True)
+        output_path = os.path.join(output_dir, "final_with_transitions.mp4")
+
+        if len(video_paths) < 2:
+            # 只有一个视频，直接返回
+            if video_paths:
+                return video_paths[0]
+            raise LLMAPIError("没有可拼接的视频")
+
+        logger.info(
+            f"[{task_id}] 转场合成: {len(video_paths)} 段视频"
+        )
+
+        # 将转场中文名映射到 FFmpeg xfade 滤镜
+        TRANSITION_MAP = {
+            "淡入": "fade", "淡出": "fade",
+            "溶解": "dissolve", "叠化": "dissolve",
+            "闪白": "fadewhite", "黑场过渡": "fadeblack",
+            "模糊过渡": "fadegrays",
+            "硬切": None, "快速切镜": None, "固定镜头": None,
+        }
+
+        # 构建 xfade 滤镜链（归一化分辨率+帧率后叠加转场）
+        filter_parts = []
+
+        for i, vp in enumerate(video_paths):
+            abs_path = os.path.abspath(vp).replace("\\", "/")
+            if i == 0:
+                filter_parts.append(f"[0:v]settb=AVTB,fps=24,scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2,setsar=1[v0]")
+            else:
+                trans = transitions[i - 1] if i <= len(transitions) else "硬切"
+                xfade = TRANSITION_MAP.get(trans)
+                if xfade:
+                    filter_parts.append(
+                        f"[{i}:v]settb=AVTB,fps=24,scale=1280:720:force_original_aspect_ratio=decrease,"
+                        f"pad=1280:720:(ow-iw)/2:(oh-ih)/2,setsar=1[f{i}];"
+                        f"[v{i-1}][f{i}]xfade=transition={xfade}:duration=0.5:offset=0[v{i}]"
+                    )
+                else:
+                    # 硬切：直接 concat
+                    filter_parts.append(
+                        f"[{i}:v]settb=AVTB,fps=24,scale=1280:720:force_original_aspect_ratio=decrease,"
+                        f"pad=1280:720:(ow-iw)/2:(oh-ih)/2,setsar=1[f{i}];"
+                        f"[v{i-1}][f{i}]concat=n=2:v=1:a=0[v{i}]"
+                    )
+
+        filter_graph = ";".join(filter_parts)
+        last_output = f"[v{len(video_paths) - 1}]"
+
+        # 构建输入参数
+        cmd = [self.ffmpeg, "-y"]
+        for vp in video_paths:
+            cmd += ["-i", os.path.abspath(vp).replace("\\", "/")]
+
+        cmd += [
+            "-filter_complex", filter_graph,
+            "-map", last_output,
+            "-c:v", "libx264", "-preset", "fast", "-crf", "23",
+            "-pix_fmt", "yuv420p",
+            output_path,
+        ]
+
+        await self._run_ffmpeg(cmd, task_id, "转场合成")
+        logger.info(f"[{task_id}] 转场合成完成: {output_path}")
+        return output_path
+
+
 # 全局单例
 video_composer = VideoComposer()

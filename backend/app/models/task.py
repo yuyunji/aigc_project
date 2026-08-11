@@ -25,6 +25,12 @@ class Task(Base):
         String(10), default="text", comment="输入类型: text/file"
     )
     progress: Mapped[int] = mapped_column(Integer, default=0, comment="进度 0-100")
+    global_prefix: Mapped[str] = mapped_column(
+        Text, nullable=True, comment="全局风格前缀（日漫风，所有图片/视频 prompt 前置注入）"
+    )
+    post_constraint: Mapped[str] = mapped_column(
+        Text, nullable=True, comment="后置强制约束（人设统一/无崩坏/无文字字幕等，注入 prompt 末尾）"
+    )
     error_message: Mapped[str] = mapped_column(Text, nullable=True, comment="失败时错误信息")
     created_at: Mapped[datetime] = mapped_column(
         DateTime, default=datetime.utcnow

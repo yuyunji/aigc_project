@@ -19,6 +19,8 @@ class TaskResponse(BaseModel):
     status: str
     source_type: str
     progress: int
+    global_prefix: str | None = None
+    post_constraint: str | None = None
     error_message: str | None = None
     created_at: datetime
     updated_at: datetime

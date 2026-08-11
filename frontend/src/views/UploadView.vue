@@ -68,23 +68,13 @@
               <span>文本分片预处理</span>
             </div>
             <div class="pipeline-arrow">↓</div>
-            <div class="pipeline-step">
-              <span class="step-dot"></span>
-              <span>生成剧本大纲</span>
-            </div>
-            <div class="pipeline-arrow">↓</div>
-            <div class="pipeline-step">
-              <span class="step-dot"></span>
-              <span>生成人物角色设定</span>
-            </div>
-            <div class="pipeline-arrow">↓</div>
-            <div class="pipeline-step">
-              <span class="step-dot"></span>
-              <span>生成分镜脚本 JSON</span>
-            </div>
-            <div class="pipeline-arrow">↓</div>
             <div class="pipeline-step highlight-step">
               <span class="step-dot highlight-dot"></span>
+              <span>AI分镜师 25镜拆解</span>
+            </div>
+            <div class="pipeline-arrow">↓</div>
+            <div class="pipeline-step">
+              <span class="step-dot"></span>
               <span>MiniMax-H3 文生视频</span>
             </div>
             <div class="pipeline-arrow">↓</div>

@@ -71,35 +71,37 @@
     </el-table-column>
 
     <!-- 操作 -->
-    <el-table-column label="操作" width="150" align="center" fixed="right">
+    <el-table-column label="操作" width="180" align="center" fixed="right">
       <template #default="{ row }">
-        <el-button
-          v-if="row.status === 'success'"
-          type="primary"
-          size="small"
-          link
-          @click="$emit('view-results', row.id)"
-        >
-          查看结果 →
-        </el-button>
-        <el-button
-          v-if="row.status !== 'running'"
-          type="warning"
-          size="small"
-          link
-          @click="$emit('regenerate', row)"
-        >
-          🔄 重新生成
-        </el-button>
-        <el-button
-          v-if="row.status === 'running'"
-          type="danger"
-          size="small"
-          link
-          @click="$emit('regenerate', row)"
-        >
-          ⚠️ 强制重置
-        </el-button>
+        <div class="action-btns">
+          <el-button
+            v-if="row.status === 'success'"
+            type="primary"
+            size="small"
+            link
+            @click="$emit('view-results', row.id)"
+          >
+            查看结果 →
+          </el-button>
+          <el-button
+            v-if="row.status !== 'running'"
+            type="warning"
+            size="small"
+            link
+            @click="$emit('regenerate', row)"
+          >
+            🔄 重新生成
+          </el-button>
+          <el-button
+            v-if="row.status === 'running'"
+            type="danger"
+            size="small"
+            link
+            @click="$emit('regenerate', row)"
+          >
+            ⚠️ 强制重置
+          </el-button>
+        </div>
       </template>
     </el-table-column>
   </el-table>
@@ -160,6 +162,10 @@ function formatTime(iso) {
   &.text-danger { color: var(--color-danger); }
 }
 
+.action-btns {
+  display: flex !important; gap: 8px; justify-content: center; flex-wrap: wrap;
+  :deep(.el-button) { margin-left: 0 !important; }
+}
 .error-msg {
   color: var(--color-danger);
   font-size: 12px;
