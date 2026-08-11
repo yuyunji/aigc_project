@@ -49,13 +49,3 @@ export function generateAllImages(taskId) {
 export function retryScene(taskId, sceneNumber) {
   return apiClient.post(`/api/media/${taskId}/scene/${sceneNumber}/retry`);
 }
-
-/** 生成导演流程图 */
-export function generateFlowchart(taskId) {
-  return apiClient.post(`/api/media/${taskId}/flowchart`);
-}
-
-/** 获取导演流程图 */
-export function getFlowchart(taskId) {
-  return apiClient.get(`/api/media/${taskId}/flowchart`);
-}

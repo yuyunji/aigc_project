@@ -70,7 +70,7 @@
             <div class="pipeline-arrow">↓</div>
             <div class="pipeline-step highlight-step">
               <span class="step-dot highlight-dot"></span>
-              <span>AI分镜师 25镜拆解</span>
+              <span>AI分镜师 智能分镜拆解</span>
             </div>
             <div class="pipeline-arrow">↓</div>
             <div class="pipeline-step">

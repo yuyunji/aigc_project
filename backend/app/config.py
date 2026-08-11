@@ -17,10 +17,10 @@ class Settings(BaseSettings):
     doubao_api_key: str = ""
     doubao_base_url: str = "https://ark.cn-beijing.volces.com/api/v3"
     doubao_model: str = "doubao-seed-2-1-turbo-260628"
-    llm_max_retries: int = 2
+    llm_max_retries: int = 1          # 重试 1 次（共 2 次调用），动态镜数输出长，减少无效重试
     llm_retry_base_delay: float = 2.0
-    llm_call_timeout: int = 300
-    task_total_timeout: int = 1200
+    llm_call_timeout: int = 600       # 单次 LLM 调用超时 10 分钟，动态镜数输出更长需要更多时间
+    task_total_timeout: int = 1800    # 任务总超时 30 分钟
 
     # 服务
     host: str = "127.0.0.1"
@@ -67,8 +67,8 @@ class Settings(BaseSettings):
     # ── 视频生成 Provider 选择 ──
     video_provider: str = "minimax-h3"      # minimax-h3（目前仅此选项）
 
-    # ── 导演流程图 ──
-    enable_storyboard_flowchart: bool = True  # 是否启用 GPT-Image-2 导演流程图生成
+    # ── 导演流程图（已禁用）──
+    enable_storyboard_flowchart: bool = False  # 已禁用
 
     # ── FFmpeg 字幕拼接 ──
     ffmpeg_path: str = "ffmpeg"

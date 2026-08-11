@@ -1,8 +1,6 @@
 """
 GPT-Image-2 分镜图片生成服务 (OpenAI Images API)
-支持两种模式：
-  1. 单分镜图片生成（替代 MiniMax image-01）
-  2. 导演流程图生成（所有分镜合成一张视觉规划图）
+单分镜图片生成（替代 MiniMax image-01）
 """
 import logging
 import os
@@ -48,92 +46,6 @@ class GptImageService:
         local_path = await self._download(task_id, scene_number, image_url)
         logger.info(f"[{task_id}] 图片已下载: {local_path}")
         return local_path, image_url
-
-    # ------------------------------------------------------------------
-    # 导演流程图生成（核心新功能）
-    # ------------------------------------------------------------------
-
-    async def generate_storyboard_flowchart(
-        self, task_id: str, scene_list: list[dict],
-        asset_refs: str = "", global_prefix: str = "",
-    ) -> str:
-        """
-        生成导演流程图 —— 25 镜 5×5 宫格，强制日漫风格，参考资产拆解。
-
-        Args:
-            task_id:       任务 ID
-            scene_list:    分镜列表
-            asset_refs:    资产拆解参考（角色/场景/道具描述）
-            global_prefix: 全局日漫风格前缀
-
-        Returns:
-            本地图片文件路径
-        """
-        if not self.api_key:
-            raise LLMAPIError("OpenAI API Key 未配置，请在 .env 中设置 OPENAI_API_KEY")
-
-        prompt = self._build_flowchart_prompt(scene_list, asset_refs, global_prefix)
-        logger.info(
-            f"[{task_id}] 导演流程图 prompt 已构建 ({len(prompt)} 字符, {len(scene_list)} 个分镜)"
-        )
-
-        # 流程图使用更宽的画幅
-        image_url = await self._generate(prompt, size="1792x1024")
-        logger.info(f"[{task_id}] GPT-Image-2 导演流程图已生成")
-
-        local_path = await self._download_flowchart(task_id, image_url)
-        logger.info(f"[{task_id}] 导演流程图已下载: {local_path}")
-        return local_path
-
-    def _build_flowchart_prompt(
-        self, scene_list: list[dict], asset_refs: str = "", global_prefix: str = ""
-    ) -> str:
-        """
-        将分镜列表编织为导演流程图 prompt。
-
-        要求 GPT-Image-2 生成一张专业电影故事板，
-        按时间线排列所有场景，标注场景编号、运镜方式和角色。
-        """
-        scene_descriptions = []
-        for scene in scene_list:
-            num = scene.get("scene_number", "?")
-            title = scene.get("scene_title", "")
-            camera = scene.get("camera_movement", "")
-            chars = scene.get("characters_in_scene", "")
-            visual = scene.get("visual_description", "") or scene.get("description", "")
-
-            # 每个分镜压缩为极简关键词（25 镜宫格图）
-            short_desc = ""
-            if visual:
-                short_desc = visual[:40]
-            elif scene.get("subject"):
-                short_desc = scene.get("subject", "")[:40]
-            scene_descriptions.append(f"#{num}: {short_desc}")
-
-        # 25 镜 5x5 宫格布局
-        total = len(scene_list)
-        joined = ", ".join(scene_descriptions)
-
-        # 强制日漫风格前缀
-        style = global_prefix[:300] if global_prefix else (
-            "2D Japanese anime, cel-shaded, hand-drawn look, "
-            "vibrant colors, clean linework, cinematic lighting"
-        )
-
-        # 资产参考
-        asset_section = ""
-        if asset_refs and asset_refs.strip():
-            asset_section = f"\n\nDesign references (use these character/scene/prop designs):\n{asset_refs[:1200]}"
-
-        return (
-            f"REQUIRED STYLE: {style}. "
-            f"Professional anime storyboard grid, 5x5 layout with {total} numbered panels. "
-            f"Each panel shows a key visual moment with its scene number. "
-            f"Consistent character designs across all panels, same art style throughout. "
-            f"No watermarks, no text except scene numbers in corner.\n\n"
-            f"Scenes: {joined[:800]}"
-            f"{asset_section}"
-        )[:3000]
 
     # ------------------------------------------------------------------
     # 底层 API 调用
@@ -197,20 +109,6 @@ class GptImageService:
         with open(filepath, "wb") as f:
             f.write(resp.content)
         return filepath
-
-    async def _download_flowchart(self, task_id: str, image_url: str) -> str:
-        """下载导演流程图到 media/{task_id}/flowchart/"""
-        output_dir = os.path.join(self.media_dir, task_id, "flowchart")
-        os.makedirs(output_dir, exist_ok=True)
-        filepath = os.path.join(output_dir, "storyboard_flowchart.png")
-
-        async with httpx.AsyncClient(timeout=60) as client:
-            resp = await client.get(image_url)
-            resp.raise_for_status()
-        with open(filepath, "wb") as f:
-            f.write(resp.content)
-        return filepath
-
 
     async def _download_asset(
         self, task_id: str, asset_name: str, image_url: str

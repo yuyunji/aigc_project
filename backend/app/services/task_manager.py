@@ -127,11 +127,12 @@ class TaskManager:
         )
         self._update_status(task_id, "running", progress=20)
 
-        # ── 阶段 2：AI 分镜师 25 镜拆解（单次 LLM 调用）──
-        logger.info(f"[{task_id}] 阶段2: AI分镜师 25 镜拆解")
+        # ── 阶段 2：AI 分镜师分镜拆解（单次 LLM 调用，镜数由 AI 判断）──
+        logger.info(f"[{task_id}] 阶段2: AI分镜师分镜拆解")
         self._update_status(task_id, "running", progress=25)
 
-        stage_timeout = settings.llm_call_timeout + 30
+        # 阶段超时 = 单次 LLM 超时 × (1 + 重试次数) + 缓冲，保证内部重试有机会跑完
+        stage_timeout = settings.llm_call_timeout * (settings.llm_max_retries + 1) + 60
 
         storyboard_text = await asyncio.wait_for(
             llm_service.generate_storyboard_single(chunks),
@@ -145,6 +146,13 @@ class TaskManager:
             f"[{task_id}] LLM 返回 {len(storyboard_text)} 字符: "
             f"{storyboard_text[:200].replace(chr(10), '↵')}..."
         )
+
+        # 提取 TOTAL_SHOTS
+        declared_total = self._extract_total_shots(storyboard_text)
+        if declared_total:
+            logger.info(f"[{task_id}] LLM 声明总镜数: {declared_total}")
+        else:
+            logger.warning(f"[{task_id}] 未提取到 TOTAL_SHOTS 声明")
 
         # 提取 GLOBAL_PREFIX
         global_prefix = self._extract_global_prefix(storyboard_text)
@@ -162,18 +170,31 @@ class TaskManager:
         else:
             logger.warning(f"[{task_id}] 未提取到后置约束")
 
-        # 解析 25 镜
+        # 解析分镜
         scene_list = self._parse_template_storyboard(storyboard_text)
         if not scene_list:
             raise LLMAPIError("分镜提示词解析失败")
 
         logger.info(f"[{task_id}] 分镜解析完成: {len(scene_list)} 个镜头")
 
-        if len(scene_list) != 25:
+        # TOTAL_SHOTS 与实际解析数一致性检查
+        if declared_total and declared_total != len(scene_list):
             logger.warning(
-                f"[{task_id}] ⚠️ 解析到 {len(scene_list)} 镜（期望 25），"
-                "非致命继续，可检查 LLM 返回质量"
+                f"[{task_id}] ⚠️ LLM 声明 {declared_total} 镜，实际解析 {len(scene_list)} 镜，"
+                "不一致！可能 LLM 输出格式有误"
             )
+
+        # 合理性检查
+        if len(scene_list) < 8:
+            logger.warning(
+                f"[{task_id}] ⚠️ 仅解析到 {len(scene_list)} 镜，数量过少，LLM 可能未正确理解任务"
+            )
+        elif len(scene_list) > 80:
+            # 硬截断：超出 80 镜部分直接丢弃，防止下游图片/视频管线失控
+            logger.warning(
+                f"[{task_id}] ⚠️ 解析到 {len(scene_list)} 镜，超过 80 上限，截断至前 80 镜"
+            )
+            scene_list = scene_list[:80]
 
         self._save_storyboards(task_id, scene_list)
         self._update_status(task_id, "running", progress=78)
@@ -186,7 +207,7 @@ class TaskManager:
 
         # ── 完成 ──
         self._update_status(task_id, "success", progress=100)
-        summary = f"25镜分镜提示词, 分镜{len(scene_list)}个"
+        summary = f"分镜提示词 {len(scene_list)} 个"
         if settings.auto_media_pipeline:
             summary += f", 视频{len(video_paths)}段"
         logger.info(f"[{task_id}] ✅ 级联任务完成: {summary}")
@@ -210,8 +231,16 @@ class TaskManager:
         return str(exc)
 
     # ------------------------------------------------------------------
-    # 全局前缀管理
+    # TOTAL_SHOTS / 全局前缀 / 后置约束 管理
     # ------------------------------------------------------------------
+
+    @staticmethod
+    def _extract_total_shots(raw_text: str) -> int | None:
+        """从 LLM 输出中提取 TOTAL_SHOTS 声明值"""
+        match = re.search(r"TOTAL_SHOTS[：:]\s*(\d+)", raw_text)
+        if match:
+            return int(match.group(1))
+        return None
 
     @staticmethod
     def _extract_global_prefix(raw_text: str) -> str:
@@ -278,7 +307,7 @@ class TaskManager:
             db.close()
 
     # ------------------------------------------------------------------
-    # 模板格式解析（25 镜模板）
+    # 模板格式解析（字段名分隔方式，兼容任意镜数）
     # ------------------------------------------------------------------
 
     # 画质补充默认值（LLM 未输出时使用）
@@ -287,8 +316,9 @@ class TaskManager:
     @staticmethod
     def _parse_template_storyboard(raw_text: str) -> list[dict]:
         """
-        解析模板格式的 25 镜分镜输出。使用字段名作为分隔符（非逗号），
+        解析模板格式的分镜输出。使用字段名作为分隔符（非逗号），
         因为「画面主体人物」「场景环境」的值内部可能包含逗号。
+        镜数由 LLM 根据剧本内容自行判断，不做固定限制。
 
         镜像格式：
             镜头 1，镜头景别：全景，拍摄角度：俯拍，运镜方式：缓慢推镜，
@@ -398,8 +428,6 @@ class TaskManager:
 
         if results:
             logger.info(f"字段名解析成功: {len(results)} 个镜头")
-            if len(results) != 25:
-                logger.warning(f"解析到 {len(results)} 个镜头（期望 25）")
         else:
             logger.warning("字段名解析无匹配，尝试回退 JSON 解析")
             return TaskManager._parse_storyboards(raw_text)
@@ -987,46 +1015,6 @@ class TaskManager:
         names = re.split(r"[,，、]+", characters_in_scene)
         return [n.strip() for n in names if n.strip()]
 
-    async def generate_storyboard_flowchart(
-        self, task_id: str, scene_list: list[dict]
-    ) -> dict:
-        """
-        使用 GPT-Image-2 生成导演流程图 —— 所有分镜合成一张视觉规划图。
-        参考资产拆解中的角色/场景/道具图片和描述。
-        返回 {status, file_path, error}
-        """
-        if settings.image_provider != "gpt-image-2":
-            return {
-                "status": "failed",
-                "error": "导演流程图需要 GPT-Image-2，请在 .env 中设置 IMAGE_PROVIDER=gpt-image-2",
-            }
-
-        logger.info(f"[{task_id}] 生成导演流程图 ({len(scene_list)} 个分镜)")
-
-        # 获取资产数据作为参考
-        asset_refs = self._get_asset_references(task_id)
-        global_prefix = TaskManager._get_global_prefix(task_id)
-
-        self._cleanup_asset(task_id, None, "flowchart")
-        asset = self._create_media_asset(task_id, "flowchart", None, "director storyboard flowchart")
-
-        try:
-            path = await asyncio.wait_for(
-                gpt_image_service.generate_storyboard_flowchart(
-                    task_id, scene_list, asset_refs, global_prefix
-                ),
-                timeout=600,
-            )
-            self._update_media_asset(asset.id, "success", file_path=path)
-            return {"status": "success", "file_path": path, "asset_id": asset.id}
-        except asyncio.TimeoutError:
-            self._update_media_asset(asset.id, "failed", error="流程图生成超时（600s），GPT-Image-2 API 响应过慢，请稍后重试")
-            return {"status": "failed", "error": "流程图生成超时，请稍后重试"}
-        except Exception as e:
-            err = str(e)[:500]
-            self._update_media_asset(asset.id, "failed", error=err)
-            return {"status": "failed", "error": err}
-
     @staticmethod
     def _get_asset_reference_for_shot(task_id: str, shot: dict) -> dict:
         """
@@ -1088,32 +1076,6 @@ class TaskManager:
 
             ref_text = " | ".join(ref_parts[:8])[:1000] if ref_parts else ""
             return {"image_url": image_url, "ref_text": ref_text}
-        finally:
-            db.close()
-
-    @staticmethod
-    def _get_asset_references(task_id: str) -> str:
-        """从资产拆解表中获取角色/场景/道具描述，用于流程图 prompt 参考"""
-        from app.models.asset import AssetItem
-        db = SessionLocal()
-        try:
-            assets = db.query(AssetItem).filter(
-                AssetItem.task_id == task_id
-            ).order_by(AssetItem.category, AssetItem.name).all()
-
-            if not assets:
-                return ""
-
-            lines = []
-            for cat, label in [("character", "角色"), ("scene", "场景"), ("prop", "道具")]:
-                cat_assets = [a for a in assets if a.category == cat]
-                if not cat_assets:
-                    continue
-                lines.append(f"{label}设计参考：")
-                for a in cat_assets[:8]:  # 每类最多 8 个
-                    desc = (a.description or a.name)[:80]
-                    lines.append(f"  {a.name}: {desc}")
-            return "\n".join(lines)[:2000]
         finally:
             db.close()
 

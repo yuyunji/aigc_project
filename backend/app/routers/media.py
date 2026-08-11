@@ -236,7 +236,7 @@ def get_pipeline_progress(task_id: str, db: Session = Depends(get_db)):
 
     stages = [
         {"stage": 1, "label": "文本预处理", "status": "success" if task.progress >= 20 else ("running" if task.progress >= 10 else "pending"), "progress": min(task.progress, 20), "assets_count": 0},
-        {"stage": 2, "label": "AI分镜师 25镜拆解", "status": "success" if task.progress >= 78 else ("running" if task.progress >= 25 else "pending"), "progress": min(max(task.progress - 20, 0), 58), "assets_count": 0},
+        {"stage": 2, "label": "AI分镜师 分镜拆解", "status": "success" if task.progress >= 78 else ("running" if task.progress >= 25 else "pending"), "progress": min(max(task.progress - 20, 0), 58), "assets_count": 0},
         {"stage": 3, "label": f"{img_label} 图片", "status": "success" if img_total > 0 and img_ok == img_total else ("running" if img_total > 0 else "pending"), "progress": 0, "assets_count": img_ok},
         {"stage": 4, "label": f"{vid_label} 视频", "status": "success" if vid_total > 0 and vid_ok == vid_total else ("running" if vid_total > 0 else "pending"), "progress": 0, "assets_count": vid_ok},
         {"stage": 5, "label": "视频拼接", "status": "success" if comp_ok > 0 else ("running" if comp_total > 0 else "pending"), "progress": 0, "assets_count": comp_ok},

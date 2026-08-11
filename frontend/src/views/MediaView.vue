@@ -9,7 +9,7 @@
       <p class="page-desc">分镜→图片→视频→拼接：AI 级联媒体生成</p>
     </div>
 
-    <!-- Provider 选择 + 流程图入口 -->
+    <!-- 任务选择 -->
     <div class="media-toolbar">
       <el-select
         v-model="selectedTaskId"

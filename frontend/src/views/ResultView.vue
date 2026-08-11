@@ -113,7 +113,7 @@ const pipelineStages = computed(() => {
   if (!p) return [];
   return [
     { label: "分片预处理", done: p.progress >= 20, active: p.progress >= 10 && p.progress < 20 },
-    { label: "AI分镜师 25镜拆解", done: p.progress >= 78, active: p.progress >= 25 && p.progress < 78 },
+    { label: "AI分镜师 分镜拆解", done: p.progress >= 78, active: p.progress >= 25 && p.progress < 78 },
   ];
 });
 
