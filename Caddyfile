@@ -4,10 +4,3 @@ dwrider.top {
         max_size 50MB
     }
 }
-
-http://101.132.136.123 {
-    reverse_proxy app:8000
-    request_body {
-        max_size 50MB
-    }
-}
