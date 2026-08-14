@@ -198,6 +198,21 @@ def delete_asset(task_id: str, asset_id: str, db: Session = Depends(get_db)):
 
 # ── 图片生成 ──
 
+# 角色三视图设定表模板（对应 character-three-view skill 第二步固定格式）
+# character 类资产参考图：左侧面部特写 + 右侧全身三视图（正/侧/背）+ 差异化服饰
+CHARACTER_TURNAROUND_CONSTRAINT = (
+    "Professional character design sheet, horizontal 16:9 layout, "
+    "clean white minimalist background, no extra elements. "
+    "Left panel: high-detail close-up portrait of the face, exact age and clear gender, "
+    "natural black hair unless specified, detailed hairstyle, "
+    "dark brown or black eyes with both eyes identical, cel-shaded anime skin with soft shading, non-realistic. "
+    "Right panel: full-body standard turnaround in three views (front view, side view, back view), "
+    "natural upright standing pose, showing full-body proportions. "
+    "Outfit: complete and undamaged clothing, distinct style and color scheme, "
+    "no redundant jewelry, no cross-gender accessories. "
+    "Negative: no realistic, no photo, no photograph, no 3D render, no 3D model"
+)
+
 @router.post("/{task_id}/assets/{asset_id}/generate-image")
 async def generate_asset_image(
     task_id: str, asset_id: str, db: Session = Depends(get_db)
@@ -259,23 +274,34 @@ async def _run_asset_image_gen(task_id: str, asset_id: str):
                 "product design reference sheet, front and side view, "
                 "detailed material and shape, no hands or people holding it"
             )
-        else:
-            category_constraint = (
-                "Front view, clean background, detailed design, high quality"
-            )
+        else:  # character —— 三视图设定表
+            category_constraint = CHARACTER_TURNAROUND_CONSTRAINT
 
         full_prompt = (
             f"{style_clause}. "
-            f"{category_label}: {prompt}. "
+            f"{category_label}: {prompt[:800]}. "
             f"{category_constraint}."
-        )[:1000]
+        )[:2000]
 
         # 生成
         from app.services.prompt_builder import prompt_builder
-        try:
-            english_prompt = await prompt_builder.build_image_prompt(full_prompt)
-        except Exception:
-            english_prompt = full_prompt
+
+        if asset.category == "character":
+            # 三视图设定表：版式约束必须是英文原文，不能被 prompt_builder 场景化重写。
+            # 只让 prompt_builder 翻译「风格前缀 + 角色描述」（中文全局前缀 → 英文）。
+            try:
+                base_prompt = await prompt_builder.build_image_prompt(
+                    f"{style_clause}. {category_label}: {prompt[:800]}."
+                )
+            except Exception:
+                base_prompt = f"{style_clause}. {category_label}: {prompt[:800]}."
+            # 版式约束前置，权重最高，避免被立绘描述覆盖
+            english_prompt = f"{CHARACTER_TURNAROUND_CONSTRAINT}. {base_prompt}"[:2000]
+        else:
+            try:
+                english_prompt = await prompt_builder.build_image_prompt(full_prompt)
+            except Exception:
+                english_prompt = full_prompt
 
         local_path, remote_url = await gpt_image_service.generate_asset_image(
             task_id, f"{asset.category}_{asset.name}", english_prompt
