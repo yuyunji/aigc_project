@@ -307,9 +307,18 @@ async def _run_asset_image_gen(task_id: str, asset_id: str):
             task_id, f"{asset.category}_{asset.name}", english_prompt
         )
 
+        # 上传到 OSS（失败降级为本地 /media）
+        oss_key = None
+        try:
+            from app.services.storage import storage
+            oss_key = await asyncio.to_thread(storage.upload, local_path)
+        except Exception as e:
+            logger.warning(f"[{task_id}] OSS 上传失败（忽略）: {e}")
+
         # 更新
         asset.image_path = local_path
         asset.image_url = remote_url
+        asset.image_oss_key = oss_key
         asset.image_status = "success"
         db.commit()
         logger.info(f"[{task_id}] 资产图片生成成功: {asset.name}")
@@ -359,6 +368,14 @@ async def upload_asset_image(
     with open(filepath, "wb") as f:
         f.write(content)
 
+    # 上传到 OSS（失败降级为本地 /media）
+    oss_key = None
+    try:
+        from app.services.storage import storage
+        oss_key = await asyncio.to_thread(storage.upload, filepath)
+    except Exception as e:
+        logger.warning(f"[{task_id}] OSS 上传失败（忽略）: {e}")
+
     # 删除旧图片
     if asset.image_path and os.path.isfile(asset.image_path):
         try:
@@ -369,6 +386,7 @@ async def upload_asset_image(
     # 更新
     asset.image_path = filepath
     asset.image_url = None
+    asset.image_oss_key = oss_key
     asset.image_status = "success"
     asset.error_message = None
     db.commit()

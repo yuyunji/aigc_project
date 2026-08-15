@@ -17,7 +17,7 @@
 
         <div v-if="img.status === 'success' && img.file_path" class="card-image">
           <img
-            :src="getMediaUrl(img.file_path)"
+            :src="getMediaUrl(img)"
             :alt="`分镜 ${img.scene_number}`"
             loading="lazy"
             @click="previewImage(img)"
@@ -49,6 +49,7 @@
 
 <script setup>
 import { ref } from "vue";
+import { getMediaUrl } from "../utils/media";
 
 const props = defineProps({
   images: { type: Array, default: () => [] },
@@ -58,15 +59,8 @@ const props = defineProps({
 const previewVisible = ref(false);
 const previewSrc = ref("");
 
-function getMediaUrl(filePath) {
-  if (!filePath) return "";
-  // 返回相对路径，由后端静态文件服务处理
-  const parts = filePath.replace(/\\/g, "/").split("/media/");
-  return parts.length > 1 ? `/media/${parts[1]}` : filePath;
-}
-
 function previewImage(img) {
-  previewSrc.value = getMediaUrl(img.file_path);
+  previewSrc.value = getMediaUrl(img);
   previewVisible.value = true;
 }
 </script>

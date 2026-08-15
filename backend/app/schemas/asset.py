@@ -26,6 +26,7 @@ class AssetResponse(BaseModel):
     image_prompt: str | None = None
     image_path: str | None = None
     image_url: str | None = None
+    url: str | None = None
     image_status: str
     error_message: str | None = None
     created_at: datetime

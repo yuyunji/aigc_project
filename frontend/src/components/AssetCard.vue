@@ -30,6 +30,8 @@
 </template>
 
 <script setup>
+import { getMediaUrl } from "../utils/media";
+
 defineProps({ asset: { type: Object, required: true } });
 defineEmits(["generate", "upload", "edit", "delete"]);
 
@@ -40,9 +42,9 @@ function statusLabel(s) {
   return s === "success" ? "已生成" : s === "failed" ? "失败" : s === "running" ? "生成中" : "待生成";
 }
 function getImgUrl(a) {
+  if (a.url) return a.url;
   if (a.image_url) return a.image_url;
-  const parts = (a.image_path || "").replace(/\\/g, "/").split("/media/");
-  return parts.length > 1 ? "/media/" + parts[1] : a.image_path;
+  return getMediaUrl(a);
 }
 function previewImg(a) {
   const url = getImgUrl(a);

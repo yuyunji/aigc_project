@@ -36,6 +36,9 @@ class AssetItem(Base):
     image_url: Mapped[str | None] = mapped_column(
         String(1000), nullable=True, comment="远程图片 URL"
     )
+    image_oss_key: Mapped[str | None] = mapped_column(
+        String(500), nullable=True, comment="阿里云 OSS object key"
+    )
     image_status: Mapped[str] = mapped_column(
         String(20), default="pending", comment="pending / running / success / failed"
     )
@@ -44,3 +47,11 @@ class AssetItem(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime, default=datetime.utcnow, onupdate=datetime.utcnow
     )
+
+    @property
+    def url(self) -> str | None:
+        """供前端展示的签名 URL（私有 Bucket）"""
+        if not self.image_oss_key:
+            return None
+        from app.services.storage import storage
+        return storage.get_signed_url(self.image_oss_key)

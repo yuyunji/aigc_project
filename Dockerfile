@@ -26,9 +26,9 @@ LABEL org.opencontainers.image.version="0.1.0"
 
 WORKDIR /app
 
-# 安装系统依赖
+# 安装系统依赖（build-essential 用于编译 oss2 的依赖 crcmod，其为纯源码包）
 RUN apt-get update -qq && \
-    apt-get install -y -qq --no-install-recommends curl && \
+    apt-get install -y -qq --no-install-recommends curl build-essential && \
     rm -rf /var/lib/apt/lists/*
 
 # 安装 Python 依赖（阿里云 pip 镜像加速）
@@ -48,7 +48,7 @@ RUN mkdir -p uploads
 ENV HOST=0.0.0.0
 ENV PORT=8000
 ENV ANTHROPIC_API_KEY=""
-ENV DATABASE_URL=sqlite:///./data/aigc_workbench.db
+ENV DATABASE_URL=mysql+pymysql://aigc:aigc_pass@mysql:3306/aigc_workbench?charset=utf8mb4
 
 EXPOSE 8000
 

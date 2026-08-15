@@ -1,16 +1,20 @@
 """
-SQLite 数据库连接 & 建表
-使用 SQLAlchemy ORM，本地文件数据库，无需额外服务
+数据库连接 & 建表
+使用 SQLAlchemy ORM，支持 SQLite / MySQL（通过 DATABASE_URL 切换）
 """
-from sqlalchemy import create_engine, text
+from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker, DeclarativeBase
 
 from app.config import settings
 
+is_sqlite = settings.database_url.startswith("sqlite")
+
 engine = create_engine(
     settings.database_url,
-    connect_args={"check_same_thread": False},  # SQLite 需要此参数
-    echo=False
+    connect_args={"check_same_thread": False} if is_sqlite else {},
+    pool_pre_ping=not is_sqlite,   # MySQL 断连自动重连
+    pool_recycle=3600,
+    echo=False,
 )
 
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
@@ -25,7 +29,7 @@ def init_db():
     """
     初始化数据库，创建所有表。
     必须先 import 所有 model 类，SQLAlchemy 才能发现它们并建表。
-    对已有表自动添加缺失的列（SQLite ALTER TABLE 兼容方案）。
+    全新创建，依赖 create_all 按最终 schema 建全表（含新增列）。
     """
     # noinspection PyUnresolvedReferences
     import app.models.task         # noqa: F401
@@ -37,69 +41,26 @@ def init_db():
 
     Base.metadata.create_all(bind=engine)
 
-    # ── SQLite 列迁移：为旧表补全新列 ──
-    _migrate_storyboard_columns()
-    _migrate_task_columns()
+    # 服务重启后，把上次进程遗留的 running 状态标记为 failed（后台任务已丢失）
+    _reset_stale_running()
 
 
-def _migrate_storyboard_columns():
-    """为旧 storyboards 表添加缺失的列（SQLite ALTER TABLE 安全迁移）"""
-    new_columns = {
-        "scene_title": "VARCHAR(200)",
-        "location": "VARCHAR(200)",
-        "time_of_day": "VARCHAR(50)",
-        "characters_in_scene": "VARCHAR(500)",
-        "camera_movement": "VARCHAR(200)",
-        "dialogue": "TEXT",
-        "visual_description": "TEXT",
-        "image_prompt": "TEXT",
-        "duration_seconds": "FLOAT",
-        # 25 镜模板新字段
-        "shot_size": "VARCHAR(50)",
-        "camera_angle": "VARCHAR(50)",
-        "subject": "TEXT",
-        "environment": "TEXT",
-        "mood": "VARCHAR(50)",
-        "composition": "VARCHAR(50)",
-        "quality_notes": "TEXT",
-        "transition": "VARCHAR(100)",
-        "dialogue_text": "TEXT",
-    }
-    with engine.connect() as conn:
-        # 获取已有列名
-        existing = {
-            row[1] for row in conn.execute(text("PRAGMA table_info(storyboards)"))
-        }
-        for col_name, col_type in new_columns.items():
-            if col_name not in existing:
-                try:
-                    conn.execute(
-                        text(f"ALTER TABLE storyboards ADD COLUMN {col_name} {col_type}")
-                    )
-                except Exception:
-                    pass  # 列已存在或其他错误，跳过
-        conn.commit()
+def _reset_stale_running():
+    """重启后清理卡在 running 的媒体/资产（asyncio 后台任务已随进程消失）"""
+    from app.models.media import MediaAsset
+    from app.models.asset import AssetItem
 
-
-def _migrate_task_columns():
-    """为旧 tasks 表添加缺失的列"""
-    new_columns = {
-        "global_prefix": "TEXT",
-        "post_constraint": "TEXT",
-    }
-    with engine.connect() as conn:
-        existing = {
-            row[1] for row in conn.execute(text("PRAGMA table_info(tasks)"))
-        }
-        for col_name, col_type in new_columns.items():
-            if col_name not in existing:
-                try:
-                    conn.execute(
-                        text(f"ALTER TABLE tasks ADD COLUMN {col_name} {col_type}")
-                    )
-                except Exception:
-                    pass
-        conn.commit()
+    db = SessionLocal()
+    try:
+        db.query(MediaAsset).filter(MediaAsset.status == "running").update(
+            {"status": "failed", "error_message": "服务重启，任务中断"}
+        )
+        db.query(AssetItem).filter(AssetItem.image_status == "running").update(
+            {"image_status": "failed", "error_message": "服务重启，任务中断"}
+        )
+        db.commit()
+    finally:
+        db.close()
 
 
 def get_db():

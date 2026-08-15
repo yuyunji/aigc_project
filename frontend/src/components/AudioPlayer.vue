@@ -7,7 +7,7 @@
       <div class="audio-icon">🎙️</div>
       <div class="audio-info">
         <div class="audio-character">{{ audio.character_name || '角色配音' }}</div>
-        <audio controls :src="getMediaUrl(audio.file_path)" class="audio-element">
+        <audio controls :src="getMediaUrl(audio)" class="audio-element">
           浏览器不支持音频播放。
         </audio>
       </div>
@@ -26,16 +26,12 @@
 </template>
 
 <script setup>
+import { getMediaUrl } from "../utils/media";
+
 defineProps({
   audios: { type: Array, default: () => [] },
   loading: { type: Boolean, default: false },
 });
-
-function getMediaUrl(filePath) {
-  if (!filePath) return "";
-  const parts = filePath.replace(/\\/g, "/").split("/media/");
-  return parts.length > 1 ? `/media/${parts[1]}` : filePath;
-}
 </script>
 
 <style lang="scss" scoped>

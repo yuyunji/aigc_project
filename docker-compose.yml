@@ -18,15 +18,44 @@ services:
       - LLM_CALL_TIMEOUT=${LLM_CALL_TIMEOUT:-120}
       - TASK_TOTAL_TIMEOUT=${TASK_TOTAL_TIMEOUT:-600}
       - MAX_INPUT_CHARS=${MAX_INPUT_CHARS:-200000}
+      - DATABASE_URL=${DATABASE_URL:-mysql+pymysql://aigc:aigc_pass@mysql:3306/aigc_workbench?charset=utf8mb4}
+      - OSS_ACCESS_KEY_ID=${OSS_ACCESS_KEY_ID:-}
+      - OSS_ACCESS_KEY_SECRET=${OSS_ACCESS_KEY_SECRET:-}
+      - OSS_ENDPOINT=${OSS_ENDPOINT:-}
+      - OSS_BUCKET=${OSS_BUCKET:-}
+      - OSS_URL_EXPIRE=${OSS_URL_EXPIRE:-3600}
     volumes:
       - ./data:/app/data
       - ./uploads:/app/uploads
+      - ./media:/app/media
+    depends_on:
+      mysql:
+        condition: service_healthy
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/api/health"]
       interval: 30s
       timeout: 10s
       retries: 3
+
+  mysql:
+    image: mysql:8.0
+    container_name: aigc-mysql
+    restart: unless-stopped
+    environment:
+      - MYSQL_ROOT_PASSWORD=${MYSQL_ROOT_PASSWORD:-root_pass}
+      - MYSQL_DATABASE=${MYSQL_DATABASE:-aigc_workbench}
+      - MYSQL_USER=${MYSQL_USER:-aigc}
+      - MYSQL_PASSWORD=${MYSQL_PASSWORD:-aigc_pass}
+    ports:
+      - "3306:3306"
+    volumes:
+      - mysql_data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -uroot -p$${MYSQL_ROOT_PASSWORD} --silent"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
 
   caddy:
     image: caddy:2-alpine
@@ -45,3 +74,4 @@ services:
 volumes:
   caddy_data:
   caddy_config:
+  mysql_data:

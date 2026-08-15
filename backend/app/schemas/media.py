@@ -42,6 +42,7 @@ class MediaAssetResponse(BaseModel):
     prompt: str | None = None
     file_path: str | None = None
     file_url: str | None = None
+    url: str | None = None
     status: str
     error_message: str | None = None
     duration: float | None = None

@@ -831,7 +831,8 @@ class TaskManager:
                     timeout=180,
                 )
 
-            self._update_media_asset(asset.id, "success", file_path=path, file_url=remote_url)
+            oss_key = await self._upload_to_oss(path)
+            self._update_media_asset(asset.id, "success", file_path=path, file_url=remote_url, oss_key=oss_key)
             return {"status": "success", "file_path": path, "asset_id": asset.id}
         except asyncio.TimeoutError:
             self._update_media_asset(asset.id, "failed", error="图片生成超时（600s），请稍后重试")
@@ -902,11 +903,23 @@ class TaskManager:
 
         asset = self._create_media_asset(task_id, "video", scene_num, prompt)
         try:
-            path = await asyncio.wait_for(
-                minimax_service.generate_video(task_id, scene_num, prompt, image_url=image_url, duration=scene_duration),
-                timeout=300,
-            )
-            self._update_media_asset(asset.id, "success", file_path=path)
+            if settings.video_provider == "comfyui":
+                from app.services.comfyui_service import comfyui_service
+                image_paths = self._get_reference_image_paths(task_id, scene, scene_num)
+                path = await asyncio.wait_for(
+                    comfyui_service.generate_video(
+                        task_id, scene_num, prompt,
+                        image_paths=image_paths, duration=scene_duration,
+                    ),
+                    timeout=settings.comfyui_poll_max_retries * settings.comfyui_poll_interval + 600,
+                )
+            else:
+                path = await asyncio.wait_for(
+                    minimax_service.generate_video(task_id, scene_num, prompt, image_url=image_url, duration=scene_duration),
+                    timeout=300,
+                )
+            oss_key = await self._upload_to_oss(path)
+            self._update_media_asset(asset.id, "success", file_path=path, oss_key=oss_key)
             return {"status": "success", "file_path": path, "asset_id": asset.id}
         except asyncio.TimeoutError:
             self._update_media_asset(asset.id, "failed", error="视频生成超时（300s）")
@@ -1005,6 +1018,95 @@ class TaskManager:
             return asset.file_url if asset else None
         finally:
             db.close()
+
+    @staticmethod
+    def _get_latest_image_path(task_id: str, scene_number: int) -> str | None:
+        """获取分镜最新图片的本地路径，用于 ComfyUI 图生视频参考"""
+        db = SessionLocal()
+        try:
+            asset = (
+                db.query(MediaAsset)
+                .filter(
+                    MediaAsset.task_id == task_id,
+                    MediaAsset.scene_number == scene_number,
+                    MediaAsset.asset_type == "image",
+                    MediaAsset.status == "success",
+                )
+                .order_by(MediaAsset.created_at.desc())
+                .first()
+            )
+            return asset.file_path if asset else None
+        finally:
+            db.close()
+
+    @staticmethod
+    def _get_reference_image_paths(task_id: str, shot: dict, scene_number: int) -> list[str]:
+        """
+        收集 ComfyUI 图生视频的多张参考图本地路径。
+        顺序：分镜图 → 角色图 → 场景图（只保留存在的文件，去重）。
+        """
+        import os
+
+        from app.models.asset import AssetItem
+
+        def _name_matches(asset_name: str, text: str) -> bool:
+            name = asset_name.strip()
+            if not name:
+                return False
+            if name in text:
+                return True
+            for length in range(len(name), 1, -1):
+                for i in range(len(name) - length + 1):
+                    token = name[i:i + length]
+                    if len(token) >= 2 and token in text:
+                        return True
+            return False
+
+        paths: list[str] = []
+        seen: set[str] = set()
+
+        # 1. 分镜图（画面构图/叙事参考）
+        shot_path = TaskManager._get_latest_image_path(task_id, scene_number)
+        if shot_path and os.path.isfile(shot_path):
+            paths.append(shot_path)
+            seen.add(os.path.abspath(shot_path))
+
+        # 2. 资产图（角色 + 场景）
+        subject = shot.get("subject", "") or ""
+        environment = shot.get("environment", "") or ""
+        combined_text = f"{subject} {environment}"
+
+        db = SessionLocal()
+        try:
+            assets = (
+                db.query(AssetItem)
+                .filter(
+                    AssetItem.task_id == task_id,
+                    AssetItem.image_status == "success",
+                )
+                .all()
+            )
+            char_path = None
+            scene_path = None
+            for a in assets:
+                if not a.image_path or not _name_matches(a.name or "", combined_text):
+                    continue
+                ap = os.path.abspath(a.image_path)
+                if ap in seen:
+                    continue
+                if a.category == "character" and char_path is None:
+                    char_path = a.image_path
+                elif a.category == "scene" and scene_path is None:
+                    scene_path = a.image_path
+
+            for p in (char_path, scene_path):
+                if p and os.path.isfile(p):
+                    paths.append(p)
+                    seen.add(os.path.abspath(p))
+        finally:
+            db.close()
+
+        return paths
 
     @staticmethod
     def _parse_char_names(characters_in_scene: str) -> list[str]:
@@ -1176,11 +1278,24 @@ class TaskManager:
             db.close()
 
     @staticmethod
+    async def _upload_to_oss(local_path: str | None) -> str | None:
+        """上传本地文件到 OSS，失败返回 None（降级为本地 /media）"""
+        if not local_path:
+            return None
+        try:
+            from app.services.storage import storage
+            return await asyncio.to_thread(storage.upload, local_path)
+        except Exception as e:
+            logger.warning(f"OSS 上传失败（忽略）: {local_path} -> {e}")
+            return None
+
+    @staticmethod
     def _update_media_asset(
         asset_id: str,
         status: str,
         file_path: str | None = None,
         file_url: str | None = None,
+        oss_key: str | None = None,
         error: str | None = None,
     ) -> None:
         """更新 media_asset 状态"""
@@ -1193,6 +1308,8 @@ class TaskManager:
                     asset.file_path = file_path
                 if file_url:
                     asset.file_url = file_url
+                if oss_key:
+                    asset.oss_key = oss_key
                 if error:
                     asset.error_message = error
                 db.commit()

@@ -182,12 +182,20 @@ async def _run_composite(task_id: str):
             output = await video_composer.composite_with_transitions(
                 task_id, video_paths[:len(transitions)], transitions
             )
+            # 上传合成视频到 OSS（失败降级为本地 /media）
+            oss_key = None
+            try:
+                from app.services.storage import storage
+                oss_key = await asyncio.to_thread(storage.upload, output)
+            except Exception as e:
+                logger.warning(f"[{task_id}] OSS 上传失败（忽略）: {e}")
             # 保存合成记录
             asset = MediaAsset(
                 task_id=task_id,
                 asset_type="composite",
                 status="success",
                 file_path=output,
+                oss_key=oss_key,
                 prompt="video composite with transitions",
             )
             db.add(asset)

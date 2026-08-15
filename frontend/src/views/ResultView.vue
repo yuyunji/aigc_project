@@ -54,6 +54,7 @@
               :taskId="selectedTaskId"
               :mediaAssets="mediaAssets"
               @generate-video="onGenerateVideo"
+              @generate-image="onGenerateImage"
               @retry="onRetryScene"
             />
           </el-tab-pane>
@@ -86,7 +87,7 @@ import { ref, computed, onMounted, onUnmounted } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { ElMessage } from "element-plus";
 import { getTaskList, getStoryboards } from "../api/task";
-import { getVideos, getImages, generateSceneVideo, retryScene } from "../api/media";
+import { getVideos, getImages, generateSceneVideo, generateSceneImage, retryScene } from "../api/media";
 import { extractAssets, getAssets, createAsset, updateAsset, deleteAsset, generateAssetImage, uploadAssetImage } from "../api/asset";
 import StoryboardCard from "../components/StoryboardCard.vue";
 import AssetBreakdownTab from "../components/AssetBreakdownTab.vue";
@@ -155,6 +156,10 @@ function pollUntilDone(pollCount = 0) {
   }, 3000);
 }
 
+async function onGenerateImage(sn) {
+  const provider = localStorage.getItem("aigc_image_provider") || "minimax";
+  try { await generateSceneImage(selectedTaskId.value, sn, provider); ElMessage.success(`分镜${sn} 图片生成已启动`); pollUntilDone(); } catch(e){}
+}
 async function onGenerateVideo(sn) {
   const provider = localStorage.getItem("aigc_video_provider") || "minimax-h3";
   try { await generateSceneVideo(selectedTaskId.value, sn, provider); ElMessage.success(`分镜${sn} 视频生成已启动`); pollUntilDone(); } catch(e){}

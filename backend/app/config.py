@@ -26,8 +26,8 @@ class Settings(BaseSettings):
     host: str = "127.0.0.1"
     port: int = 8000
 
-    # 数据库
-    database_url: str = "sqlite:///./aigc_workbench.db"
+    # 数据库（MySQL）
+    database_url: str = "mysql+pymysql://aigc:aigc_pass@127.0.0.1:3306/aigc_workbench?charset=utf8mb4"
 
     # 文本处理
     max_chunk_size: int = 8000
@@ -65,15 +65,24 @@ class Settings(BaseSettings):
     openai_image_quality: str = "high"       # standard | high
 
     # ── 视频生成 Provider 选择 ──
-    video_provider: str = "minimax-h3"      # minimax-h3（目前仅此选项）
+    video_provider: str = "minimax-h3"      # minimax-h3 | comfyui（本地 MiniMax H3）
 
-    # ── 导演流程图（已禁用）──
-    enable_storyboard_flowchart: bool = False  # 已禁用
+    # ── ComfyUI 本地 MiniMax H3 视频生成 ──
+    comfyui_url: str = "http://127.0.0.1:8198"
+    comfyui_poll_interval: int = 5        # 轮询间隔（秒）
+    comfyui_poll_max_retries: int = 360   # 约 30 分钟
 
     # ── FFmpeg 字幕拼接 ──
     ffmpeg_path: str = "ffmpeg"
     media_dir: str = "media"
     auto_media_pipeline: bool = False  # 默认关闭自动媒体管线，改为手动逐分镜触发
+
+    # ── 阿里云 OSS（私有 Bucket + 签名 URL）──
+    oss_access_key_id: str = ""
+    oss_access_key_secret: str = ""
+    oss_endpoint: str = ""      # 如 oss-cn-shanghai.aliyuncs.com
+    oss_bucket: str = ""
+    oss_url_expire: int = 3600  # 签名 URL 有效期（秒）
 
     class Config:
         env_file = ".env"

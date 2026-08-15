@@ -58,7 +58,7 @@
           <VideoPlayer
             v-for="v in videos"
             :key="v.id"
-            :src="getMediaUrl(v.file_path)"
+            :src="getMediaUrl(v)"
             :title="`分镜 ${v.scene_number} ` + (v.status === 'success' ? '✅' : v.status === 'failed' ? '❌' : '⏳')"
             :loading="false"
           />
@@ -75,7 +75,7 @@
           <el-tag v-else type="warning" size="small" effect="plain" style="margin-left:8px">拼接中</el-tag>
         </template>
         <VideoPlayer v-if="composite.status === 'success'"
-          :src="getMediaUrl(composite.file_path)"
+          :src="getMediaUrl(composite)"
           title="完整短剧"
           :loading="compositeLoading"
         />
@@ -99,6 +99,7 @@ import MediaPipeline from "../components/MediaPipeline.vue";
 import { getTaskList } from "../api/task";
 import { getPipelineProgress, getVideos, getComposite } from "../api/media";
 import apiClient from "../api/index";
+import { getMediaUrl } from "../utils/media";
 
 const route = useRoute();
 const router = useRouter();
@@ -170,12 +171,6 @@ async function loadAll(taskId) {
     (async () => { videosLoading.value = true; try { const r = await getVideos(taskId); videos.value = r.data.assets || []; } catch(e){} finally { videosLoading.value = false; } })(),
     (async () => { compositeLoading.value = true; try { const r = await getComposite(taskId); composite.value = r.data; } catch(e){} finally { compositeLoading.value = false; } })(),
   ]);
-}
-
-function getMediaUrl(filePath) {
-  if (!filePath) return "";
-  const parts = filePath.replace(/\\/g, "/").split("/media/");
-  return parts.length > 1 ? `/media/${parts[1]}` : filePath;
 }
 
 async function triggerComposite() {

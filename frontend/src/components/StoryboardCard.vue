@@ -70,9 +70,28 @@
             </el-collapse-item>
           </el-collapse>
 
+          <!-- 生成的分镜图片 -->
+          <div v-if="getSceneImage(scene.scene_number)" class="scene-image">
+            <img
+              :src="getMediaUrl(getSceneImage(scene.scene_number))"
+              :alt="`分镜 ${scene.scene_number}`"
+              loading="lazy"
+            />
+          </div>
+
           <!-- ── 操作区 ── -->
           <div class="scene-actions">
             <div class="actions-row">
+              <el-button
+                size="small"
+                type="primary"
+                plain
+                :loading="imageState(scene.scene_number) === 'running'"
+                :disabled="imageState(scene.scene_number) === 'running'"
+                @click="$emit('generate-image', scene.scene_number)"
+              >
+                {{ imageState(scene.scene_number) === 'success' ? '🔄 重新生成图片' : '🖼️ 生成图片' }}
+              </el-button>
               <el-button
                 size="small"
                 :type="videoState(scene.scene_number) === 'success' ? 'warning' : 'success'"
@@ -115,6 +134,8 @@
 </template>
 
 <script setup>
+import { getMediaUrl } from "../utils/media";
+
 const props = defineProps({
   scenes: { type: Array, default: () => [] },
   loading: { type: Boolean, default: false },
@@ -122,7 +143,7 @@ const props = defineProps({
   mediaAssets: { type: Array, default: () => [] },
 });
 
-defineEmits(["generate-video", "retry"]);
+defineEmits(["generate-video", "generate-image", "retry"]);
 
 function getSceneMedia(sceneNumber) {
   return (props.mediaAssets || []).filter(
@@ -130,7 +151,14 @@ function getSceneMedia(sceneNumber) {
   );
 }
 
+function getSceneImage(sceneNumber) {
+  return getSceneMedia(sceneNumber).find(
+    (m) => m.asset_type === "image" && m.status === "success"
+  );
+}
+
 function videoState(sceneNumber) { return mediaState(sceneNumber, "video"); }
+function imageState(sceneNumber) { return mediaState(sceneNumber, "image"); }
 
 function mediaState(sceneNumber, type) {
   const assets = getSceneMedia(sceneNumber);
@@ -151,12 +179,6 @@ function statusLabel(m) {
 function splitChars(text) { return (text || "").split(/[、,，]/).map((s) => s.trim()).filter(Boolean); }
 function splitLines(text) { return (text || "").split("\n").filter((l) => l.trim()); }
 function isSpeakerLine(line) { return /^[^：:]+[：:]/.test(line); }
-
-function getMediaUrl(filePath) {
-  if (!filePath) return "";
-  const parts = filePath.replace(/\\/g, "/").split("/media/");
-  return parts.length > 1 ? `/media/${parts[1]}` : filePath;
-}
 </script>
 
 <style lang="scss" scoped>
