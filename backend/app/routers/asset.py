@@ -20,6 +20,7 @@ from app.database import get_db
 from app.models.task import Task
 from app.models.storyboard import Storyboard
 from app.models.asset import AssetItem
+from app.services.events import event_bus
 from app.schemas.asset import (
     AssetCreateRequest, AssetUpdateRequest, AssetResponse,
     AssetListResponse, AssetExtractResponse,
@@ -321,6 +322,13 @@ async def _run_asset_image_gen(task_id: str, asset_id: str):
         asset.image_oss_key = oss_key
         asset.image_status = "success"
         db.commit()
+        event_bus.publish(task_id, "asset", {
+            "asset_id": asset.id,
+            "task_id": task_id,
+            "image_status": "success",
+            "error_message": None,
+            "url": storage.get_signed_url(oss_key) if oss_key else None,
+        })
         logger.info(f"[{task_id}] 资产图片生成成功: {asset.name}")
 
     except Exception as e:
@@ -329,6 +337,13 @@ async def _run_asset_image_gen(task_id: str, asset_id: str):
             asset.image_status = "failed"
             asset.error_message = str(e)[:500]
             db.commit()
+            event_bus.publish(task_id, "asset", {
+                "asset_id": asset.id,
+                "task_id": task_id,
+                "image_status": "failed",
+                "error_message": asset.error_message,
+                "url": None,
+            })
         logger.error(f"[{task_id}] 资产图片生成失败: {e}")
     finally:
         db.close()
@@ -390,5 +405,12 @@ async def upload_asset_image(
     asset.image_status = "success"
     asset.error_message = None
     db.commit()
+    event_bus.publish(task_id, "asset", {
+        "asset_id": asset.id,
+        "task_id": task_id,
+        "image_status": "success",
+        "error_message": None,
+        "url": storage.get_signed_url(oss_key) if oss_key else None,
+    })
 
     return {"status": "uploaded", "file_path": filepath, "asset_id": asset_id}

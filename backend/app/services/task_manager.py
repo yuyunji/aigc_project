@@ -26,6 +26,7 @@ from app.services.llm_service import llm_service
 from app.services.minimax_service import minimax_service
 from app.services.gpt_image_service import gpt_image_service
 from app.services.video_composer import video_composer
+from app.services.events import event_bus
 from app.utils.exceptions import (
     LLMAPIError,
     TokenLimitError,
@@ -778,7 +779,13 @@ class TaskManager:
 
         try:
             if provider == "gpt-image-2":
-                # GPT-Image-2: 全局前缀（日漫风）+ 角色外貌 → 翻译英文 → 发送
+                # GPT-Image-2: 一致性上下文（角色圣经 + 场景锚定，英文直拼不压缩）+ 中文主体翻译
+                char_bible = self._get_character_bible(task_id, scene.get("subject", ""))
+                scene_ref = self._get_scene_reference(
+                    task_id, f"{scene.get('location', '')} {scene.get('environment', '')}"
+                )
+                prev_shot = self._get_prev_shot_context(task_id, scene_num)
+
                 prompt_parts = []
                 if global_prefix:
                     prompt_parts.append(
@@ -792,7 +799,12 @@ class TaskManager:
                     )
                 if settings.image_style:
                     prompt_parts.append(f"Style detail: {settings.image_style}")
-                if char_appearance:
+                if prev_shot:
+                    prompt_parts.append(
+                        f"PREVIOUS SHOT (continue seamlessly from its ending): {prev_shot}"
+                    )
+                # 兜底：无资产三视图时用文字外貌描述
+                if char_appearance and not char_bible:
                     prompt_parts.append(
                         f"Character appearances (MUST keep consistent across all scenes):\n{char_appearance}"
                     )
@@ -804,6 +816,20 @@ class TaskManager:
                     english_prompt = await prompt_builder.build_image_prompt(full_prompt)
                 except Exception:
                     english_prompt = full_prompt
+
+                # 一致性上下文（英文，绕过 200 词压缩直接拼在前面）
+                consistency = []
+                if char_bible:
+                    consistency.append(
+                        f"CHARACTER BIBLE (identical in every shot, never alter appearance):\n{char_bible}"
+                    )
+                if scene_ref:
+                    consistency.append(
+                        f"SCENE REFERENCE (keep environment/lighting consistent): {scene_ref}"
+                    )
+                if consistency:
+                    english_prompt = "\n\n".join(consistency) + "\n\n" + english_prompt
+
                 path, remote_url = await asyncio.wait_for(
                     gpt_image_service.generate_scene_image(task_id, scene_num, english_prompt),
                     timeout=600,
@@ -849,6 +875,10 @@ class TaskManager:
         camera = scene.get("camera_movement", "")
         action = scene.get("action_instruction", "")
         dialogue = scene.get("dialogue", "")
+        # 台词对白：优先新字段 dialogue_text，去掉 @无 前缀但保留其后的画外音
+        dialogue_text = (scene.get("dialogue_text", "") or dialogue or "").strip()
+        if dialogue_text.startswith("@无"):
+            dialogue_text = dialogue_text[2:].strip()
         location = scene.get("location", "")
         scene_duration = int(scene.get("duration_seconds", 6) or 6)
         scene_duration = max(4, min(scene_duration, 15))
@@ -872,6 +902,8 @@ class TaskManager:
             elif settings.image_style:
                 parts.append(f"Style: {settings.image_style}")
             parts.append(image_prompt[:1500])
+            if dialogue_text:
+                parts.append(f"台词/画外音：{dialogue_text[:800]}")
             if asset_ref["ref_text"]:
                 parts.append(f"Design reference: {asset_ref['ref_text']}")
             postfix = TaskManager._get_post_constraint(task_id)
@@ -881,8 +913,8 @@ class TaskManager:
         else:
             # 旧格式兜底
             sound = ""
-            if dialogue:
-                sound = f"Sound: characters speaking naturally, ambient {location or 'scene'} atmosphere"
+            if dialogue_text:
+                sound = f"台词/画外音：{dialogue_text[:800]}"
             parts = []
             if global_prefix:
                 parts.append(global_prefix[:800])
@@ -996,6 +1028,92 @@ class TaskManager:
                     lines.append(f"{c.name}: {'; '.join(appearance_parts)}")
 
             return "\n".join(lines)
+        finally:
+            db.close()
+
+    @staticmethod
+    def _asset_name_matches(asset_name: str, text: str) -> bool:
+        """分词匹配：资产名中 2 字及以上词组在文本中出现则匹配"""
+        name = (asset_name or "").strip()
+        if not name:
+            return False
+        if name in text:
+            return True
+        for length in range(len(name), 1, -1):
+            for i in range(len(name) - length + 1):
+                token = name[i:i + length]
+                if len(token) >= 2 and token in text:
+                    return True
+        return False
+
+    @staticmethod
+    def _get_character_bible(task_id: str, subject_text: str) -> str:
+        """从资产拆解提取出场角色的三视图英文 prompt，构建角色外貌圣经"""
+        from app.models.asset import AssetItem
+        if not subject_text or not subject_text.strip():
+            return ""
+        db = SessionLocal()
+        try:
+            assets = (
+                db.query(AssetItem)
+                .filter(
+                    AssetItem.task_id == task_id,
+                    AssetItem.category == "character",
+                    AssetItem.image_status == "success",
+                )
+                .all()
+            )
+            lines = []
+            for a in assets:
+                if not TaskManager._asset_name_matches(a.name or "", subject_text):
+                    continue
+                ref = (a.image_prompt or a.description or a.name or "").strip()
+                if ref:
+                    lines.append(f"- {a.name}: {ref[:400]}")
+            return "\n".join(lines)
+        finally:
+            db.close()
+
+    @staticmethod
+    def _get_scene_reference(task_id: str, scene_text: str) -> str:
+        """从资产拆解提取场景参考描述（英文 image_prompt）。正向匹配：场景资产名出现在分镜 location/environment 里"""
+        from app.models.asset import AssetItem
+        if not scene_text or not scene_text.strip():
+            return ""
+        db = SessionLocal()
+        try:
+            assets = (
+                db.query(AssetItem)
+                .filter(
+                    AssetItem.task_id == task_id,
+                    AssetItem.category == "scene",
+                    AssetItem.image_status == "success",
+                )
+                .all()
+            )
+            for a in assets:
+                if TaskManager._asset_name_matches(a.name or "", scene_text):
+                    return (a.image_prompt or a.description or a.name or "").strip()[:400]
+            return ""
+        finally:
+            db.close()
+
+    @staticmethod
+    def _get_prev_shot_context(task_id: str, scene_num: int) -> str:
+        """拿前一镜的画面描述，作为当前镜头的叙事衔接（中文，交给翻译）"""
+        db = SessionLocal()
+        try:
+            prev = (
+                db.query(Storyboard)
+                .filter(
+                    Storyboard.task_id == task_id,
+                    Storyboard.scene_number == scene_num - 1,
+                )
+                .first()
+            )
+            if not prev:
+                return ""
+            return (prev.image_prompt or prev.visual_description or "")[:300]
         finally:
             db.close()
 
@@ -1273,6 +1391,14 @@ class TaskManager:
             db.add(asset)
             db.commit()
             db.refresh(asset)
+            event_bus.publish(task_id, "media", {
+                "asset_id": asset.id,
+                "task_id": task_id,
+                "asset_type": asset_type,
+                "scene_number": scene_number,
+                "status": "running",
+                "error_message": None,
+            })
             return asset
         finally:
             db.close()
@@ -1313,6 +1439,21 @@ class TaskManager:
                 if error:
                     asset.error_message = error
                 db.commit()
+
+                url = None
+                if asset.oss_key:
+                    from app.services.storage import storage
+                    url = storage.get_signed_url(asset.oss_key)
+                event_bus.publish(asset.task_id, "media", {
+                    "asset_id": asset.id,
+                    "task_id": asset.task_id,
+                    "asset_type": asset.asset_type,
+                    "scene_number": asset.scene_number,
+                    "status": asset.status,
+                    "error_message": asset.error_message,
+                    "file_path": asset.file_path,
+                    "url": url,
+                })
         finally:
             db.close()
 
@@ -1405,6 +1546,12 @@ class TaskManager:
                 if error is not None:
                     task.error_message = error
                 db.commit()
+                event_bus.publish(task_id, "task", {
+                    "task_id": task_id,
+                    "status": status,
+                    "progress": task.progress,
+                    "error_message": task.error_message,
+                })
         finally:
             db.close()
 

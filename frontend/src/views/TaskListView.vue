@@ -9,14 +9,6 @@
         <p class="page-desc">查看所有剧本生成任务的状态与进度</p>
       </div>
       <div class="header-actions">
-        <el-button
-          :type="polling ? 'warning' : 'primary'"
-          plain
-          @click="togglePolling"
-          size="default"
-        >
-          {{ polling ? "⏸ 停止轮询" : "▶ 自动刷新" }}
-        </el-button>
         <el-button @click="fetchTasks" :loading="loading" size="default">
           🔄 手动刷新
         </el-button>
@@ -30,7 +22,6 @@
     <div v-if="activeCount > 0" class="active-bar">
       <span class="active-dot"></span>
       {{ activeCount }} 个任务正在处理中
-      <span v-if="polling" class="polling-tag">自动刷新中</span>
     </div>
 
     <el-card shadow="never" class="table-card">
@@ -50,12 +41,12 @@ import { useRouter } from "vue-router";
 import { ElMessage, ElMessageBox } from "element-plus";
 import TaskTable from "../components/TaskTable.vue";
 import { getTaskList, regenerateTask } from "../api/task";
+import { subscribeGlobalEvents } from "../utils/stream";
 
 const router = useRouter();
 const tasks = ref([]);
 const loading = ref(false);
-const polling = ref(false);
-let pollingTimer = null;
+let globalEvents = null;
 
 const activeCount = computed(
   () => tasks.value.filter((t) => t.status === "pending" || t.status === "running").length
@@ -73,36 +64,18 @@ async function fetchTasks() {
   }
 }
 
-function hasActiveTasks() {
-  return tasks.value.some((t) => t.status === "pending" || t.status === "running");
-}
-
-function startPolling() {
-  polling.value = true;
-  pollingTimer = setInterval(async () => {
-    await fetchTasks();
-    if (!hasActiveTasks() && polling.value) {
-      stopPolling();
-    }
-  }, 3000);
-}
-
-function stopPolling() {
-  polling.value = false;
-  if (pollingTimer) {
-    clearInterval(pollingTimer);
-    pollingTimer = null;
-  }
-}
-
-function togglePolling() {
-  if (polling.value) {
-    stopPolling();
-  } else {
-    fetchTasks().then(() => {
-      if (hasActiveTasks()) startPolling();
-    });
-  }
+function setupGlobalEvents() {
+  if (globalEvents) { globalEvents.close(); globalEvents = null; }
+  globalEvents = subscribeGlobalEvents({
+    onTask(data) {
+      const t = tasks.value.find(x => x.id === data.task_id);
+      if (t) {
+        t.status = data.status;
+        t.progress = data.progress;
+        if (data.error_message) t.error_message = data.error_message;
+      }
+    },
+  });
 }
 
 function goToResults(taskId) {
@@ -119,19 +92,19 @@ async function onRegenerate(task) {
     await regenerateTask(task.id);
     ElMessage.success("已重新入队，请等待处理");
     await fetchTasks();
-    startPolling();
   } catch (e) {
     if (e !== "cancel") ElMessage.error("重新生成失败");
   }
 }
 
 onMounted(() => {
-  fetchTasks().then(() => {
-    if (hasActiveTasks()) startPolling();
-  });
+  fetchTasks();
+  setupGlobalEvents();
 });
 
-onUnmounted(() => stopPolling());
+onUnmounted(() => {
+  if (globalEvents) { globalEvents.close(); globalEvents = null; }
+});
 </script>
 
 <style lang="scss" scoped>

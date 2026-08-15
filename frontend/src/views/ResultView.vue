@@ -91,6 +91,7 @@ import { getVideos, getImages, generateSceneVideo, generateSceneImage, retryScen
 import { extractAssets, getAssets, createAsset, updateAsset, deleteAsset, generateAssetImage, uploadAssetImage } from "../api/asset";
 import StoryboardCard from "../components/StoryboardCard.vue";
 import AssetBreakdownTab from "../components/AssetBreakdownTab.vue";
+import { subscribeTaskEvents } from "../utils/stream";
 
 const route = useRoute();
 const router = useRouter();
@@ -127,6 +128,7 @@ async function loadCompletedTasks() {
     if (queryId && completedTasks.value.some(t => t.id === queryId)) {
       selectedTaskId.value = queryId;
       await loadResults(queryId);
+      setupTaskEvents(queryId);
       router.replace({ path: "/results" });
     }
   } catch (e) {}
@@ -134,8 +136,9 @@ async function loadCompletedTasks() {
 }
 
 async function onTaskSelect(taskId) {
-  if (!taskId) { storyboards.value = []; assets.value = []; return; }
+  if (!taskId) { storyboards.value = []; assets.value = []; setupTaskEvents(null); return; }
   await loadResults(taskId);
+  setupTaskEvents(taskId);
 }
 
 async function loadResults(taskId) {
@@ -146,23 +149,81 @@ async function loadResults(taskId) {
   ]);
 }
 
-function pollUntilDone(pollCount = 0) {
-  const MAX = 40; // 最多轮询 40 次（约 2 分钟）
-  if (pollCount >= MAX) return;
-  setTimeout(async () => {
-    await loadResults(selectedTaskId.value);
-    const stillRunning = mediaAssets.value.some(m => m.status === 'running');
-    if (stillRunning) pollUntilDone(pollCount + 1);
-  }, 3000);
+let taskEvents = null;
+
+function setupTaskEvents(taskId) {
+  if (taskEvents) { taskEvents.close(); taskEvents = null; }
+  if (!taskId) return;
+  taskEvents = subscribeTaskEvents(taskId, {
+    onMedia(data) {
+      const item = {
+        id: data.asset_id, task_id: data.task_id, asset_type: data.asset_type,
+        scene_number: data.scene_number, status: data.status,
+        error_message: data.error_message, file_path: data.file_path, url: data.url,
+      };
+      // 同分镜同类型只保留最新一条：真实事件到达时清掉本地占位和旧的 success/failed 记录，
+      // 否则重新生成时旧 success 残留会导致按钮不 loading、图片不反显
+      if (data.scene_number != null && (data.asset_type === "image" || data.asset_type === "video")) {
+        mediaAssets.value = mediaAssets.value.filter(
+          m => !(m.asset_type === data.asset_type && m.scene_number === data.scene_number && m.id !== data.asset_id)
+        );
+      }
+      const idx = mediaAssets.value.findIndex(m => m.id === data.asset_id);
+      if (idx >= 0) mediaAssets.value[idx] = { ...mediaAssets.value[idx], ...item };
+      else mediaAssets.value.push(item);
+    },
+    onAsset(data) {
+      const a = assets.value.find(x => x.id === data.asset_id);
+      if (!a) return;
+      a.image_status = data.image_status;
+      if (data.error_message) a.error_message = data.error_message;
+      if (data.url) a.url = data.url;
+      if (data.image_status === "success") ElMessage.success(`${a.name} 图片生成完成`);
+      if (data.image_status === "failed") ElMessage.error(`${a.name} 生成失败: ${data.error_message || "未知错误"}`);
+    },
+    onTask(data) {
+      const t = completedTasks.value.find(x => x.id === data.task_id);
+      if (t) {
+        t.status = data.status;
+        t.progress = data.progress;
+        if (data.error_message) t.error_message = data.error_message;
+      }
+    },
+  });
+}
+
+// 点击生成时立即在本地置为 running（清旧资产 + 插入占位），让按钮立刻进入 loading，
+// 不必等 SSE running 事件到达；真实事件到达后由 onMedia 替换占位。
+function markSceneRunning(sceneNumber, assetType) {
+  mediaAssets.value = mediaAssets.value.filter(
+    m => !(m.asset_type === assetType && m.scene_number === sceneNumber)
+  );
+  mediaAssets.value.push({
+    id: `local-${assetType}-${sceneNumber}`,
+    task_id: selectedTaskId.value,
+    asset_type: assetType,
+    scene_number: sceneNumber,
+    status: "running",
+  });
+}
+
+function markSceneIdle(sceneNumber, assetType) {
+  mediaAssets.value = mediaAssets.value.filter(
+    m => !(m.asset_type === assetType && m.scene_number === sceneNumber && String(m.id).startsWith("local-"))
+  );
 }
 
 async function onGenerateImage(sn) {
   const provider = localStorage.getItem("aigc_image_provider") || "minimax";
-  try { await generateSceneImage(selectedTaskId.value, sn, provider); ElMessage.success(`分镜${sn} 图片生成已启动`); pollUntilDone(); } catch(e){}
+  markSceneRunning(sn, "image");
+  try { await generateSceneImage(selectedTaskId.value, sn, provider); ElMessage.success(`分镜${sn} 图片生成已启动`); }
+  catch(e) { markSceneIdle(sn, "image"); }
 }
 async function onGenerateVideo(sn) {
   const provider = localStorage.getItem("aigc_video_provider") || "minimax-h3";
-  try { await generateSceneVideo(selectedTaskId.value, sn, provider); ElMessage.success(`分镜${sn} 视频生成已启动`); pollUntilDone(); } catch(e){}
+  markSceneRunning(sn, "video");
+  try { await generateSceneVideo(selectedTaskId.value, sn, provider); ElMessage.success(`分镜${sn} 视频生成已启动`); }
+  catch(e) { markSceneIdle(sn, "video"); }
 }
 async function onRetryScene(sn) { try { await retryScene(selectedTaskId.value, sn); ElMessage.success(`分镜${sn} 已重置`); await loadResults(selectedTaskId.value); } catch(e){} }
 
@@ -192,35 +253,7 @@ async function onGenerateAssetImage(assetId) {
   try {
     await generateAssetImage(selectedTaskId.value, assetId);
     ElMessage.success("图片生成已启动");
-    pollAssetImage(assetId, 0);
   } catch (e) { /* global handler */ }
-}
-
-async function silentRefreshAssets() {
-  try {
-    const r = await getAssets(selectedTaskId.value);
-    if (r.data && r.data.assets) {
-      // 无感更新：直接替换数据，不触发 loading 状态
-      assets.value = r.data.assets;
-    }
-  } catch (e) { /* silent */ }
-}
-
-function pollAssetImage(assetId, count) {
-  if (count >= 30) return;
-  setTimeout(async () => {
-    await silentRefreshAssets();
-    const found = assets.value.find(a => a.id === assetId);
-    if (found && found.image_status === "success") {
-      ElMessage.success(`${found.name} 图片生成完成`);
-      return;
-    }
-    if (found && found.image_status === "failed") {
-      ElMessage.error(`${found.name} 生成失败: ${found.error_message || "未知错误"}`);
-      return;
-    }
-    pollAssetImage(assetId, count + 1);
-  }, 8000);
 }
 
 async function onUploadAssetImage(assetId, file) {
@@ -257,16 +290,9 @@ async function onUpdateAsset(assetId, data) {
 
 onMounted(() => {
   loadCompletedTasks();
-  document.addEventListener("visibilitychange", () => {
-    if (!document.hidden && selectedTaskId.value) {
-      loadResults(selectedTaskId.value).then(() => {
-        if (mediaAssets.value.some(m => m.status === "running")) pollUntilDone();
-      });
-    }
-  });
 });
 onUnmounted(() => {
-  document.removeEventListener("visibilitychange", () => {});
+  if (taskEvents) { taskEvents.close(); taskEvents = null; }
 });
 </script>
 

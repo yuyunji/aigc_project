@@ -90,7 +90,7 @@
 </template>
 
 <script setup>
-import { ref, onMounted } from "vue";
+import { ref, onMounted, onUnmounted } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { ElMessage } from "element-plus";
 import { Loading } from "@element-plus/icons-vue";
@@ -100,6 +100,7 @@ import { getTaskList } from "../api/task";
 import { getPipelineProgress, getVideos, getComposite } from "../api/media";
 import apiClient from "../api/index";
 import { getMediaUrl } from "../utils/media";
+import { subscribeTaskEvents } from "../utils/stream";
 
 const route = useRoute();
 const router = useRouter();
@@ -131,6 +132,7 @@ async function loadEligibleTasks() {
     if (queryId) {
       selectedTaskId.value = queryId;
       await loadAll(queryId);
+      setupTaskEvents(queryId);
       router.replace({ path: "/media" });
     }
   } catch (e) { /* global handler */ }
@@ -140,6 +142,7 @@ async function loadEligibleTasks() {
 async function onTaskSelect(taskId) {
   if (!taskId) return;
   await loadAll(taskId);
+  setupTaskEvents(taskId);
 }
 
 async function triggerGeneration() {
@@ -148,14 +151,6 @@ async function triggerGeneration() {
   try {
     await apiClient.post(`/api/media/${selectedTaskId.value}/generate`);
     ElMessage.success("视频生成已启动，请等待...");
-    // 轮询进度
-    let polls = 0;
-    const poller = setInterval(async () => {
-      await loadAll(selectedTaskId.value);
-      polls++;
-      const vids = videos.value.filter((v) => v.status === "success");
-      if (vids.length > 0 || polls > 60) clearInterval(poller);
-    }, 5000);
   } catch (e) { /* global handler */ }
   finally { triggering.value = false; }
 }
@@ -178,21 +173,46 @@ async function triggerComposite() {
   try {
     await apiClient.post(`/api/media/${selectedTaskId.value}/composite`);
     ElMessage.success("视频拼接已启动，正在添加转场效果...");
-    // 轮询合成结果
-    let polls = 0;
-    const poller = setInterval(async () => {
-      await loadAll(selectedTaskId.value);
-      polls++;
-      if (composite.value?.status === "success" || composite.value?.status === "failed" || polls > 60) {
-        clearInterval(poller);
-        if (composite.value?.status === "success") ElMessage.success("视频拼接完成！");
-        compositing.value = false;
-      }
-    }, 5000);
   } catch (e) { compositing.value = false; }
 }
 
+let taskEvents = null;
+
+function setupTaskEvents(taskId) {
+  if (taskEvents) { taskEvents.close(); taskEvents = null; }
+  if (!taskId) return;
+  taskEvents = subscribeTaskEvents(taskId, {
+    onMedia(data) {
+      if (data.asset_type === "composite") {
+        composite.value = {
+          ...(composite.value || {}),
+          id: data.asset_id, status: data.status,
+          error_message: data.error_message, file_path: data.file_path, url: data.url,
+        };
+        if (data.status === "success") { ElMessage.success("视频拼接完成！"); compositing.value = false; }
+        if (data.status === "failed") { ElMessage.error(`拼接失败: ${data.error_message || "未知错误"}`); compositing.value = false; }
+      } else if (data.asset_type === "video") {
+        const idx = videos.value.findIndex(v => v.id === data.asset_id);
+        const item = {
+          id: data.asset_id, task_id: data.task_id, asset_type: data.asset_type,
+          scene_number: data.scene_number, status: data.status,
+          error_message: data.error_message, file_path: data.file_path, url: data.url,
+        };
+        if (idx >= 0) videos.value[idx] = { ...videos.value[idx], ...item };
+        else videos.value.push(item);
+      }
+    },
+    onTask(data) {
+      const t = eligibleTasks.value.find(x => x.id === data.task_id);
+      if (t) { t.status = data.status; t.progress = data.progress; }
+    },
+  });
+}
+
 onMounted(() => loadEligibleTasks());
+onUnmounted(() => {
+  if (taskEvents) { taskEvents.close(); taskEvents = null; }
+});
 </script>
 
 <style lang="scss" scoped>

@@ -23,6 +23,7 @@ from app.schemas.media import (
     PipelineProgressResponse,
 )
 from app.services.task_manager import task_manager
+from app.services.events import event_bus
 from app.config import settings
 
 logger = logging.getLogger(__name__)
@@ -90,6 +91,9 @@ def _get_scene_or_404(task_id: str, scene_number: int) -> dict:
             "characters_in_scene": s.characters_in_scene or "",
             "camera_movement": s.camera_movement or "",
             "dialogue": s.dialogue or "",
+            "dialogue_text": s.dialogue_text or "",
+            "subject": s.subject or "",
+            "environment": s.environment or "",
             "visual_description": s.visual_description or s.description or "",
             "image_prompt": s.image_prompt or "",
             "duration_seconds": s.duration_seconds or 5.0,
@@ -200,6 +204,16 @@ async def _run_composite(task_id: str):
             )
             db.add(asset)
             db.commit()
+            event_bus.publish(task_id, "media", {
+                "asset_id": asset.id,
+                "task_id": task_id,
+                "asset_type": "composite",
+                "scene_number": None,
+                "status": "success",
+                "error_message": None,
+                "file_path": output,
+                "url": storage.get_signed_url(oss_key) if oss_key else None,
+            })
             logger.info(f"[{task_id}] 视频拼接完成: {output}")
     except Exception as e:
         logger.exception(f"[{task_id}] 视频拼接失败: {e}")
@@ -211,6 +225,16 @@ async def _run_composite(task_id: str):
         )
         db.add(asset)
         db.commit()
+        event_bus.publish(task_id, "media", {
+            "asset_id": asset.id,
+            "task_id": task_id,
+            "asset_type": "composite",
+            "scene_number": None,
+            "status": "failed",
+            "error_message": str(e)[:500],
+            "file_path": None,
+            "url": None,
+        })
     finally:
         db.close()
 
@@ -298,6 +322,8 @@ async def generate_all_images(task_id: str):
             "characters_in_scene": s.characters_in_scene or "",
             "camera_movement": s.camera_movement or "",
             "dialogue": s.dialogue or "",
+            "subject": s.subject or "",
+            "environment": s.environment or "",
             "visual_description": s.visual_description or s.description or "",
             "image_prompt": s.image_prompt or "",
             "description": s.description or "",
