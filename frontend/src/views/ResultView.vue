@@ -176,10 +176,16 @@ function setupTaskEvents(taskId) {
       const a = assets.value.find(x => x.id === data.asset_id);
       if (!a) return;
       a.image_status = data.image_status;
-      if (data.error_message) a.error_message = data.error_message;
+      if (data.image_url) a.image_url = data.image_url;
+      if (data.image_path) a.image_path = data.image_path;
       if (data.url) a.url = data.url;
-      if (data.image_status === "success") ElMessage.success(`${a.name} 图片生成完成`);
-      if (data.image_status === "failed") ElMessage.error(`${a.name} 生成失败: ${data.error_message || "未知错误"}`);
+      if (data.image_status === "success") {
+        a.error_message = "";
+        ElMessage.success(`${a.name} 图片生成完成`);
+      } else if (data.image_status === "failed") {
+        a.error_message = data.error_message || "未知错误";
+        ElMessage.error(`${a.name} 生成失败: ${a.error_message}`);
+      }
     },
     onTask(data) {
       const t = completedTasks.value.find(x => x.id === data.task_id);
@@ -250,10 +256,18 @@ async function onExtractAssets() {
 }
 
 async function onGenerateAssetImage(assetId) {
+  const a = assets.value.find((x) => x.id === assetId);
+  const prevStatus = a ? a.image_status : null;
+  // 点击后立即本地置 running，让按钮进入 loading（后端不发 running 事件）
+  if (a) { a.image_status = "running"; a.error_message = ""; }
   try {
     await generateAssetImage(selectedTaskId.value, assetId);
     ElMessage.success("图片生成已启动");
-  } catch (e) { /* global handler */ }
+  } catch (e) {
+    // 失败回滚，避免按钮卡在 loading
+    if (a) { a.image_status = prevStatus; a.error_message = ""; }
+    /* global handler */
+  }
 }
 
 async function onUploadAssetImage(assetId, file) {

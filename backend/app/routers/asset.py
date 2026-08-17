@@ -328,6 +328,9 @@ async def _run_asset_image_gen(task_id: str, asset_id: str):
             "image_status": "success",
             "error_message": None,
             "url": storage.get_signed_url(oss_key) if oss_key else None,
+            # 补发原始 URL / 本地路径，OSS 未配置（url=None）时前端也能反显
+            "image_url": asset.image_url,
+            "image_path": asset.image_path,
         })
         logger.info(f"[{task_id}] 资产图片生成成功: {asset.name}")
 

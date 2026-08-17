@@ -8,7 +8,7 @@
       <el-tag :type="statusTag(asset.image_status)" size="small">{{ statusLabel(asset.image_status) }}</el-tag>
     </div>
     <div class="card-desc" v-if="asset.description">{{ asset.description }}</div>
-    <div class="card-image" v-if="asset.image_path || asset.image_url">
+    <div class="card-image" v-if="asset.image_path || asset.image_url || asset.url">
       <img :src="getImgUrl(asset)" :alt="asset.name" @click="previewImg(asset)" />
     </div>
     <div class="card-actions">
