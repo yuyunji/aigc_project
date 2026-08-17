@@ -26,6 +26,13 @@ from app.services.llm_service import llm_service
 from app.services.minimax_service import minimax_service
 from app.services.gpt_image_service import gpt_image_service
 from app.services.video_composer import video_composer
+from app.services.storyboard_polish import polish_storyboards
+from app.services.consistency import (
+    build_shot_context,
+    render_character_bible_text,
+    render_scene_lock_text,
+    render_prop_lock_text,
+)
 from app.services.events import event_bus
 from app.utils.exceptions import (
     LLMAPIError,
@@ -178,6 +185,10 @@ class TaskManager:
 
         logger.info(f"[{task_id}] 分镜解析完成: {len(scene_list)} 个镜头")
 
+        # 分镜后处理校验：景别交替 / 情绪两字 / 转场白名单 / 情绪断崖检测
+        scene_list = polish_storyboards(scene_list)
+        logger.info(f"[{task_id}] 分镜后处理校验完成: {len(scene_list)} 个镜头")
+
         # TOTAL_SHOTS 与实际解析数一致性检查
         if declared_total and declared_total != len(scene_list):
             logger.warning(
@@ -311,8 +322,8 @@ class TaskManager:
     # 模板格式解析（字段名分隔方式，兼容任意镜数）
     # ------------------------------------------------------------------
 
-    # 画质补充默认值（LLM 未输出时使用）
-    DEFAULT_QUALITY_NOTES = "金属冷光，发丝清晰，服饰道具细节完整，抗锯齿高清渲染"
+    # 画质补充默认值（LLM 未输出时使用）。注意：不得强制「服饰」，避免与「赤裸上身/裸露」等状态冲突
+    DEFAULT_QUALITY_NOTES = "金属冷光，发丝清晰，轮廓与表面材质细节完整，抗锯齿高清渲染"
 
     @staticmethod
     def _parse_template_storyboard(raw_text: str) -> list[dict]:
@@ -717,8 +728,9 @@ class TaskManager:
         character_list: list[dict],
     ) -> None:
         """
-        阶段6：视频拼接 + SRT 字幕 (FFmpeg)。
-        MiniMax-H3 已含音频，无需额外配音轨。
+        阶段6：视频拼接（带转场）。
+        MiniMax-H3 已含音频，无需额外配音轨。转场来自 scene_list.transition。
+        注：字幕烧录仍由 video_composer.composite 提供，带转场路径暂不烧字幕。
         """
         if not video_paths:
             logger.warning(f"[{task_id}] 无可用视频，跳过拼接")
@@ -727,17 +739,15 @@ class TaskManager:
         logger.info(f"[{task_id}] 阶段6: FFmpeg 视频拼接")
         self._update_status(task_id, "running", progress=97)
 
-        subtitle_data = self._build_subtitles(
-            scene_list, character_list, len(video_paths)
-        )
-
         asset = self._create_media_asset(
             task_id, "composite", None, "final composite (MiniMax-H3)"
         )
 
         try:
-            output_path = await video_composer.composite(
-                task_id, video_paths, audio_paths or [], subtitle_data
+            # 从 scene_list 提取转场列表（按 scene_number 顺序，与 video_paths 对齐）
+            transitions = [s.get("transition") or "硬切" for s in scene_list]
+            output_path = await video_composer.composite_with_transitions(
+                task_id, video_paths, transitions
             )
             self._update_media_asset(asset.id, "success", file_path=output_path)
         except Exception as e:
@@ -779,11 +789,8 @@ class TaskManager:
 
         try:
             if provider == "gpt-image-2":
-                # GPT-Image-2: 一致性上下文（角色圣经 + 场景锚定，英文直拼不压缩）+ 中文主体翻译
-                char_bible = self._get_character_bible(task_id, scene.get("subject", ""))
-                scene_ref = self._get_scene_reference(
-                    task_id, f"{scene.get('location', '')} {scene.get('environment', '')}"
-                )
+                # GPT-Image-2: 统一一致性上下文（角色圣经 + 场景几何锁 + 道具锁）
+                ctx = build_shot_context(task_id, scene)
                 prev_shot = self._get_prev_shot_context(task_id, scene_num)
 
                 prompt_parts = []
@@ -803,11 +810,6 @@ class TaskManager:
                     prompt_parts.append(
                         f"PREVIOUS SHOT (continue seamlessly from its ending): {prev_shot}"
                     )
-                # 兜底：无资产三视图时用文字外貌描述
-                if char_appearance and not char_bible:
-                    prompt_parts.append(
-                        f"Character appearances (MUST keep consistent across all scenes):\n{char_appearance}"
-                    )
                 prompt_parts.append(f"Scene description: {prompt}")
                 full_prompt = "\n\n".join(prompt_parts)
 
@@ -818,14 +820,26 @@ class TaskManager:
                     english_prompt = full_prompt
 
                 # 一致性上下文（英文，绕过 200 词压缩直接拼在前面）
-                consistency = []
+                consistency: list[str] = []
+                # 状态感知：把当前镜头的 subject+environment 传给着装锁做状态匹配
+                shot_text = f"{scene.get('subject', '')} {scene.get('environment', '')}"
+                char_bible = render_character_bible_text(ctx["characters"], shot_text)
                 if char_bible:
                     consistency.append(
-                        f"CHARACTER BIBLE (identical in every shot, never alter appearance):\n{char_bible}"
+                        "CHARACTER BIBLE (identical in every shot, never alter appearance):\n"
+                        + char_bible
                     )
-                if scene_ref:
+                scene_lock = render_scene_lock_text(ctx["scene"])
+                if scene_lock:
+                    consistency.append(scene_lock)
+                prop_lock = render_prop_lock_text(ctx["props"])
+                if prop_lock:
+                    consistency.append(prop_lock)
+                # 兜底：无资产角色时用文字外貌描述
+                if char_appearance and not ctx["characters"]:
                     consistency.append(
-                        f"SCENE REFERENCE (keep environment/lighting consistent): {scene_ref}"
+                        "Character appearances (MUST keep consistent across all scenes):\n"
+                        + char_appearance
                     )
                 if consistency:
                     english_prompt = "\n\n".join(consistency) + "\n\n" + english_prompt
@@ -1028,73 +1042,6 @@ class TaskManager:
                     lines.append(f"{c.name}: {'; '.join(appearance_parts)}")
 
             return "\n".join(lines)
-        finally:
-            db.close()
-
-    @staticmethod
-    def _asset_name_matches(asset_name: str, text: str) -> bool:
-        """分词匹配：资产名中 2 字及以上词组在文本中出现则匹配"""
-        name = (asset_name or "").strip()
-        if not name:
-            return False
-        if name in text:
-            return True
-        for length in range(len(name), 1, -1):
-            for i in range(len(name) - length + 1):
-                token = name[i:i + length]
-                if len(token) >= 2 and token in text:
-                    return True
-        return False
-
-    @staticmethod
-    def _get_character_bible(task_id: str, subject_text: str) -> str:
-        """从资产拆解提取出场角色的三视图英文 prompt，构建角色外貌圣经"""
-        from app.models.asset import AssetItem
-        if not subject_text or not subject_text.strip():
-            return ""
-        db = SessionLocal()
-        try:
-            assets = (
-                db.query(AssetItem)
-                .filter(
-                    AssetItem.task_id == task_id,
-                    AssetItem.category == "character",
-                    AssetItem.image_status == "success",
-                )
-                .all()
-            )
-            lines = []
-            for a in assets:
-                if not TaskManager._asset_name_matches(a.name or "", subject_text):
-                    continue
-                ref = (a.image_prompt or a.description or a.name or "").strip()
-                if ref:
-                    lines.append(f"- {a.name}: {ref[:400]}")
-            return "\n".join(lines)
-        finally:
-            db.close()
-
-    @staticmethod
-    def _get_scene_reference(task_id: str, scene_text: str) -> str:
-        """从资产拆解提取场景参考描述（英文 image_prompt）。正向匹配：场景资产名出现在分镜 location/environment 里"""
-        from app.models.asset import AssetItem
-        if not scene_text or not scene_text.strip():
-            return ""
-        db = SessionLocal()
-        try:
-            assets = (
-                db.query(AssetItem)
-                .filter(
-                    AssetItem.task_id == task_id,
-                    AssetItem.category == "scene",
-                    AssetItem.image_status == "success",
-                )
-                .all()
-            )
-            for a in assets:
-                if TaskManager._asset_name_matches(a.name or "", scene_text):
-                    return (a.image_prompt or a.description or a.name or "").strip()[:400]
-            return ""
         finally:
             db.close()
 

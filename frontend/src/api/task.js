@@ -28,6 +28,11 @@ export function regenerateTask(taskId) {
   return apiClient.post(`/api/tasks/${taskId}/regenerate`);
 }
 
+/** 删除任务 */
+export function deleteTask(taskId) {
+  return apiClient.delete(`/api/tasks/${taskId}`);
+}
+
 /** 获取任务大纲 */
 export function getOutline(taskId) {
   return apiClient.get(`/api/results/${taskId}/outline`);

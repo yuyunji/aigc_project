@@ -30,6 +30,7 @@
         :loading="loading"
         @view-results="goToResults"
         @regenerate="onRegenerate"
+        @delete="onDelete"
       />
     </el-card>
   </div>
@@ -40,7 +41,7 @@ import { ref, computed, onMounted, onUnmounted } from "vue";
 import { useRouter } from "vue-router";
 import { ElMessage, ElMessageBox } from "element-plus";
 import TaskTable from "../components/TaskTable.vue";
-import { getTaskList, regenerateTask } from "../api/task";
+import { getTaskList, regenerateTask, deleteTask } from "../api/task";
 import { subscribeGlobalEvents } from "../utils/stream";
 
 const router = useRouter();
@@ -94,6 +95,22 @@ async function onRegenerate(task) {
     await fetchTasks();
   } catch (e) {
     if (e !== "cancel") ElMessage.error("重新生成失败");
+  }
+}
+
+async function onDelete(task) {
+  try {
+    await ElMessageBox.confirm(
+      `确定删除任务「${task.title}」吗？该任务的所有大纲、角色、分镜、媒体文件都将被永久删除，且无法恢复。`,
+      "确认删除",
+      { confirmButtonText: "删除", cancelButtonText: "取消", type: "error" }
+    );
+    await deleteTask(task.id);
+    ElMessage.success("任务已删除");
+    await fetchTasks();
+  } catch (e) {
+    if (e === "cancel" || e === "close") return;
+    ElMessage.error("删除失败");
   }
 }
 

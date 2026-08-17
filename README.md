@@ -53,7 +53,7 @@
 |------|------|------|
 | 后端框架 | Python FastAPI 0.115 | 异步 REST API |
 | ORM | SQLAlchemy 2.0 | 同步引擎 + async to_thread |
-| 数据库 | SQLite | 本地文件数据库，零配置 |
+| 数据库 | MySQL | 通过 DATABASE_URL 配置 |
 | AI 能力 | Anthropic Claude API | Sonnet 5 模型 |
 | 前端框架 | Vue 3.5 | Composition API + script setup |
 | UI 组件库 | Element Plus 2.9 | Bento Grid + AI Purple 主题 |
@@ -89,7 +89,7 @@ graph TD
         L[LLMService<br/>Claude API 封装<br/>重试 + 超时 + Token检查]
     end
 
-    subgraph 数据层["💾 SQLite"]
+    subgraph 数据层["💾 MySQL"]
         M[(Tasks)]
         N[(Outlines)]
         O[(Characters)]
@@ -133,7 +133,7 @@ sequenceDiagram
     participant Q as 任务队列
     participant TM as TaskManager
     participant LLM as Claude API
-    participant DB as SQLite
+    participant DB as MySQL
 
     U->>FE: 粘贴文本 / 上传文件
     FE->>API: POST /api/tasks
@@ -340,7 +340,7 @@ aigc_project/
 │   └── app/
 │       ├── main.py                   # FastAPI 入口 + 生命周期
 │       ├── config.py                 # 配置管理（含LLM/超时参数）
-│       ├── database.py               # SQLite + get_db 依赖
+│       ├── database.py               # MySQL + get_db 依赖
 │       ├── models/                   # ORM 模型
 │       │   ├── task.py
 │       │   ├── outline.py
@@ -404,7 +404,7 @@ aigc_project/
 | `MAX_CHUNK_SIZE` | `8000` | 分片大小（字符） |
 | `MAX_INPUT_CHARS` | `200000` | 最大输入字符数 |
 | `MAX_CHUNKS_FOR_LLM` | `3` | 送入 LLM 的最大分片数 |
-| `DATABASE_URL` | `sqlite:///./aigc_workbench.db` | 数据库路径 |
+| `DATABASE_URL` | `mysql+pymysql://aigc:aigc_pass@127.0.0.1:3306/aigc_workbench?charset=utf8mb4` | 数据库连接串 |
 
 ---
 

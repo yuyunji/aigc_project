@@ -59,14 +59,15 @@ class VideoComposer:
         srt_path = os.path.join(output_dir, "subtitles.srt")
         self._write_srt(subtitle_texts, srt_path)
 
-        # ── Step 3: 拼接视频片段 ──
+        # ── Step 3: 拼接视频片段（先统一帧率/分辨率/时间基，保证硬切可无缝） ──
         concat_output = os.path.join(output_dir, "concat_video.mp4")
         concat_cmd = [
             self.ffmpeg, "-y",
             "-f", "concat",
             "-safe", "0",
             "-i", concat_list_path,
-            "-c", "copy",
+            "-vf", "settb=AVTB,fps=24,scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2,setsar=1",
+            "-c:v", "libx264", "-preset", "fast", "-crf", "23",
             concat_output,
         ]
         await self._run_ffmpeg(concat_cmd, task_id, "视频拼接")
@@ -163,6 +164,31 @@ class VideoComposer:
         logger.info(f"[{task_id}] FFmpeg {stage} 完成")
 
 
+    @staticmethod
+    def _transition_xfade_name(trans: str) -> str | None:
+        """将中文转场词映射到 FFmpeg xfade 滤镜名。None 表示硬切。"""
+        return {
+            "淡入": "fade", "淡出": "fadeblack",
+            "溶解": "dissolve", "叠化": "dissolve",
+            "闪白": "fadewhite", "黑场过渡": "fadeblack",
+            "模糊过渡": "fadegrays",
+            "匹配剪辑": "fade",
+            "推入": "zoomin", "拉出": "zoomout",
+            "硬切": None, "快速切镜": None, "固定镜头": None,
+        }.get(trans)
+
+    @staticmethod
+    def _transition_duration(trans: str) -> float:
+        """按转场节奏给时长：快切更短，段落收尾更长。"""
+        if trans in ("硬切", "快速切镜", "匹配剪辑"):
+            return 0.0
+        if trans in ("闪白", "推入"):
+            return 0.3
+        if trans in ("黑场过渡", "拉出", "淡出"):
+            return 0.9
+        # 溶解 / 叠化 / 淡入 / 模糊过渡
+        return 0.55
+
     async def composite_with_transitions(
         self,
         task_id: str,
@@ -170,11 +196,13 @@ class VideoComposer:
         transitions: list[str],
     ) -> str:
         """
-        带转场效果的视频拼接。
+        带转场效果的视频拼接（xfade 滤镜链）。
 
         Args:
-            video_paths: 视频片段路径列表
-            transitions: 转场类型列表（与视频一一对应，最后一个镜头无转场）
+            video_paths: 视频片段路径列表（按分镜顺序）
+            transitions: 转场类型列表，长度 = len(video_paths)；
+                         transitions[i] 表示「镜头 i 开头如何衔接镜头 i-1」，
+                         transitions[0] 通常为「淡入」。
 
         Returns:
             合成视频路径
@@ -184,52 +212,50 @@ class VideoComposer:
         output_path = os.path.join(output_dir, "final_with_transitions.mp4")
 
         if len(video_paths) < 2:
-            # 只有一个视频，直接返回
             if video_paths:
                 return video_paths[0]
             raise LLMAPIError("没有可拼接的视频")
 
-        logger.info(
-            f"[{task_id}] 转场合成: {len(video_paths)} 段视频"
-        )
+        # 转场列表长度对齐（不足补硬切，超出的截断）
+        n = len(video_paths)
+        aligned = list(transitions[:n])
+        if len(aligned) < n:
+            aligned += ["硬切"] * (n - len(aligned))
 
-        # 将转场中文名映射到 FFmpeg xfade 滤镜
-        TRANSITION_MAP = {
-            "淡入": "fade", "淡出": "fade",
-            "溶解": "dissolve", "叠化": "dissolve",
-            "闪白": "fadewhite", "黑场过渡": "fadeblack",
-            "模糊过渡": "fadegrays",
-            "硬切": None, "快速切镜": None, "固定镜头": None,
-        }
+        logger.info(f"[{task_id}] 转场合成: {n} 段视频, 转场={aligned}")
 
-        # 构建 xfade 滤镜链（归一化分辨率+帧率后叠加转场）
-        filter_parts = []
+        # 每个片段的归一化滤镜（统一时间基/帧率/分辨率，供 xfade 与 concat 复用）
+        def _norm(idx: int, tag: str) -> str:
+            return (
+                f"[{idx}:v]settb=AVTB,fps=24,"
+                f"scale=1280:720:force_original_aspect_ratio=decrease,"
+                f"pad=1280:720:(ow-iw)/2:(oh-ih)/2,setsar=1[{tag}]"
+            )
 
-        for i, vp in enumerate(video_paths):
-            abs_path = os.path.abspath(vp).replace("\\", "/")
-            if i == 0:
-                filter_parts.append(f"[0:v]settb=AVTB,fps=24,scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2,setsar=1[v0]")
+        filter_parts = [_norm(0, "v0")]
+
+        for i in range(1, n):
+            trans = aligned[i]                        # 镜头 i 与镜头 i-1 之间
+            xfade = self._transition_xfade_name(trans)
+            dur = self._transition_duration(trans)
+            # 用前段与当前段的时长推断 offset，避免过早/过晚溶解
+            probe_dur = self._probe_duration(video_paths[i - 1])
+            if probe_dur is None or probe_dur <= dur:
+                offset = 0.0
             else:
-                trans = transitions[i - 1] if i <= len(transitions) else "硬切"
-                xfade = TRANSITION_MAP.get(trans)
-                if xfade:
-                    filter_parts.append(
-                        f"[{i}:v]settb=AVTB,fps=24,scale=1280:720:force_original_aspect_ratio=decrease,"
-                        f"pad=1280:720:(ow-iw)/2:(oh-ih)/2,setsar=1[f{i}];"
-                        f"[v{i-1}][f{i}]xfade=transition={xfade}:duration=0.5:offset=0[v{i}]"
-                    )
-                else:
-                    # 硬切：直接 concat
-                    filter_parts.append(
-                        f"[{i}:v]settb=AVTB,fps=24,scale=1280:720:force_original_aspect_ratio=decrease,"
-                        f"pad=1280:720:(ow-iw)/2:(oh-ih)/2,setsar=1[f{i}];"
-                        f"[v{i-1}][f{i}]concat=n=2:v=1:a=0[v{i}]"
-                    )
+                offset = max(0.0, probe_dur - dur)
+            filter_parts.append(_norm(i, f"f{i}"))
+            if xfade:
+                filter_parts.append(
+                    f"[v{i-1}][f{i}]xfade=transition={xfade}:"
+                    f"duration={dur:.2f}:offset={offset:.2f}[v{i}]"
+                )
+            else:
+                filter_parts.append(f"[v{i-1}][f{i}]concat=n=2:v=1:a=0[v{i}]")
 
         filter_graph = ";".join(filter_parts)
-        last_output = f"[v{len(video_paths) - 1}]"
+        last_output = f"[v{n - 1}]"
 
-        # 构建输入参数
         cmd = [self.ffmpeg, "-y"]
         for vp in video_paths:
             cmd += ["-i", os.path.abspath(vp).replace("\\", "/")]
@@ -245,6 +271,25 @@ class VideoComposer:
         await self._run_ffmpeg(cmd, task_id, "转场合成")
         logger.info(f"[{task_id}] 转场合成完成: {output_path}")
         return output_path
+
+    @staticmethod
+    def _probe_duration(video_path: str) -> float | None:
+        """用 ffprobe 读取视频时长（秒），失败返回 None。"""
+        import subprocess
+        try:
+            out = subprocess.run(
+                [
+                    "ffprobe", "-v", "error",
+                    "-show_entries", "format=duration",
+                    "-of", "default=noprint_wrappers=1:nokey=1",
+                    video_path,
+                ],
+                capture_output=True, text=True, timeout=10,
+            )
+            val = out.stdout.strip()
+            return float(val) if val else None
+        except Exception:
+            return None
 
 
 # 全局单例

@@ -101,6 +101,15 @@
           >
             ⚠️ 强制重置
           </el-button>
+          <el-button
+            v-if="row.status !== 'running'"
+            type="danger"
+            size="small"
+            link
+            @click="$emit('delete', row)"
+          >
+            🗑 删除
+          </el-button>
         </div>
       </template>
     </el-table-column>
@@ -112,7 +121,7 @@ defineProps({
   tasks: { type: Array, default: () => [] },
   loading: { type: Boolean, default: false },
 });
-defineEmits(["view-results", "regenerate"]);
+defineEmits(["view-results", "regenerate", "delete"]);
 
 function statusType(status) {
   return { pending: "info", running: "", success: "success", failed: "danger" }[status] || "info";

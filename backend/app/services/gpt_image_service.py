@@ -136,6 +136,41 @@ class GptImageService:
         logger.info(f"[{task_id}] 资产图片已生成: {asset_name}")
         return local_path, image_url
 
+    async def generate_portrait(
+        self, task_id: str, character_name: str, portrait_prompt: str
+    ) -> tuple[str, str]:
+        """
+        生成角色正脸定妆图（干净背景、正面半身、五官/服装明确）。
+        返回 (本地路径, 远程 URL)。用于纯文字路径下逐字锁定角色外观。
+        """
+        prompt = (
+            f"Front-face portrait of {character_name}: {portrait_prompt}. "
+            "Clean solid neutral background, front view, half-body, "
+            "clear facial features, full outfit visible, neutral pose, "
+            "character reference, high quality, detailed"
+        )
+        image_url = await self._generate(prompt, settings.openai_image_size)
+        local_path = await self._download_portrait(task_id, character_name, image_url)
+        logger.info(f"[{task_id}] 角色正脸定妆图已生成: {character_name}")
+        return local_path, image_url
+
+    async def _download_portrait(
+        self, task_id: str, character_name: str, image_url: str
+    ) -> str:
+        """下载正脸定妆图到 media/{task_id}/characters/{name}_portrait.png"""
+        import re
+        safe_name = re.sub(r"[^\w一-鿿_-]", "_", character_name)[:50]
+        output_dir = os.path.join(self.media_dir, task_id, "characters")
+        os.makedirs(output_dir, exist_ok=True)
+        filepath = os.path.join(output_dir, f"{safe_name}_portrait.png")
+
+        async with httpx.AsyncClient(timeout=60) as client:
+            resp = await client.get(image_url)
+            resp.raise_for_status()
+        with open(filepath, "wb") as f:
+            f.write(resp.content)
+        return filepath
+
 
 # 全局单例
 gpt_image_service = GptImageService()

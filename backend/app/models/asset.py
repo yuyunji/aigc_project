@@ -30,6 +30,18 @@ class AssetItem(Base):
     image_prompt: Mapped[str | None] = mapped_column(
         Text, nullable=True, comment="GPT-Image-2 生成用英文 prompt"
     )
+    spatial_layout: Mapped[str | None] = mapped_column(
+        Text, nullable=True, comment="场景空间布局（机位/标志物方位/光源，用于跨镜头场景一致性）"
+    )
+    portrait_prompt: Mapped[str | None] = mapped_column(
+        Text, nullable=True, comment="角色正脸定妆图 prompt（干净背景半身定妆）"
+    )
+    portrait_path: Mapped[str | None] = mapped_column(
+        String(500), nullable=True, comment="角色正脸定妆图本地路径"
+    )
+    portrait_url: Mapped[str | None] = mapped_column(
+        String(1000), nullable=True, comment="角色正脸定妆图远程 URL"
+    )
     image_path: Mapped[str | None] = mapped_column(
         String(500), nullable=True, comment="本地图片路径"
     )

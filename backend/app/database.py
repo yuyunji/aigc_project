@@ -1,18 +1,15 @@
 """
 数据库连接 & 建表
-使用 SQLAlchemy ORM，支持 SQLite / MySQL（通过 DATABASE_URL 切换）
+使用 SQLAlchemy ORM，仅支持 MySQL（通过 DATABASE_URL 配置）。
 """
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker, DeclarativeBase
 
 from app.config import settings
 
-is_sqlite = settings.database_url.startswith("sqlite")
-
 engine = create_engine(
     settings.database_url,
-    connect_args={"check_same_thread": False} if is_sqlite else {},
-    pool_pre_ping=not is_sqlite,   # MySQL 断连自动重连
+    pool_pre_ping=True,   # MySQL 断连自动重连
     pool_recycle=3600,
     echo=False,
 )

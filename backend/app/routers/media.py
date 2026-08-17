@@ -172,19 +172,25 @@ async def _run_composite(task_id: str):
         )
         video_paths = [v.file_path for v in videos if v.file_path and os.path.isfile(v.file_path)]
 
-        # 读取转场信息
+        # 读取转场信息（按 scene_number 建立映射，供精确对齐）
         storyboards = (
             db.query(Storyboard)
             .filter(Storyboard.task_id == task_id)
             .order_by(Storyboard.scene_number.asc())
             .all()
         )
-        transitions = [s.transition or "硬切" for s in storyboards]
+        transition_by_scene = {s.scene_number: (s.transition or "硬切") for s in storyboards}
 
         if len(video_paths) >= 2:
             from app.services.video_composer import video_composer
+            # 用每个视频的 scene_number 精确对齐转场，而非依赖数组下标
+            transitions = [
+                transition_by_scene.get(v.scene_number, "硬切")
+                for v in videos
+                if v.file_path and os.path.isfile(v.file_path)
+            ]
             output = await video_composer.composite_with_transitions(
-                task_id, video_paths[:len(transitions)], transitions
+                task_id, video_paths, transitions
             )
             # 上传合成视频到 OSS（失败降级为本地 /media）
             oss_key = None

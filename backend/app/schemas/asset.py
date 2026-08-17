@@ -24,6 +24,9 @@ class AssetResponse(BaseModel):
     name: str
     description: str | None = None
     image_prompt: str | None = None
+    spatial_layout: str | None = None
+    portrait_prompt: str | None = None
+    portrait_url: str | None = None
     image_path: str | None = None
     image_url: str | None = None
     url: str | None = None
@@ -48,3 +51,7 @@ class AssetExtractResponse(BaseModel):
     characters: list[str]
     scenes: list[str]
     props: list[str]
+    wardrobe_warnings: list[str] = Field(
+        default_factory=list,
+        description="缺规范「服装」字段的角色清单，用于提示用户补全以保证跨镜头服装一致",
+    )

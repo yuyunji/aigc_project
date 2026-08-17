@@ -19,6 +19,7 @@ from app.models.outline import Outline
 from app.models.character import Character
 from app.models.storyboard import Storyboard
 from app.models.media import MediaAsset
+from app.models.asset import AssetItem
 from app.schemas.task import (
     TaskCreateRequest,
     TaskResponse,
@@ -130,6 +131,7 @@ async def regenerate_task(task_id: str, db: Session = Depends(get_db)):
     db.query(Character).filter(Character.task_id == task_id).delete()
     db.query(Storyboard).filter(Storyboard.task_id == task_id).delete()
     db.query(MediaAsset).filter(MediaAsset.task_id == task_id).delete()
+    db.query(AssetItem).filter(AssetItem.task_id == task_id).delete()
 
     # ── 清理媒体文件 ──
     media_path = os.path.join(settings.media_dir, task_id)
@@ -146,3 +148,39 @@ async def regenerate_task(task_id: str, db: Session = Depends(get_db)):
     await task_queue.enqueue(task_id=task.id, source_text=source_text)
 
     return {"status": "regenerated", "task_id": task_id}
+
+
+@router.delete("/{task_id}")
+async def delete_task(task_id: str, db: Session = Depends(get_db)):
+    """
+    删除任务及其所有关联数据。
+
+    限制：正在执行（running）的任务不可删除，避免删除后台仍在写入的数据。
+    pending / success / failed 状态均可删除。
+    """
+    task = db.query(Task).filter(Task.id == task_id).first()
+    if not task:
+        raise HTTPException(status_code=404, detail=f"任务 {task_id} 不存在")
+
+    # ── 正在执行的任务禁止删除 ──
+    if task.status == "running":
+        raise HTTPException(
+            status_code=409,
+            detail="任务正在执行中，无法删除。请等待完成或先强制重置。",
+        )
+
+    # ── 清理关联数据（按外键从属顺序）──
+    db.query(Outline).filter(Outline.task_id == task_id).delete()
+    db.query(Character).filter(Character.task_id == task_id).delete()
+    db.query(Storyboard).filter(Storyboard.task_id == task_id).delete()
+    db.query(MediaAsset).filter(MediaAsset.task_id == task_id).delete()
+    db.query(AssetItem).filter(AssetItem.task_id == task_id).delete()
+    db.delete(task)
+    db.commit()
+
+    # ── 清理媒体文件 ──
+    media_path = os.path.join(settings.media_dir, task_id)
+    if os.path.isdir(media_path):
+        shutil.rmtree(media_path, ignore_errors=True)
+
+    return {"status": "deleted", "task_id": task_id}

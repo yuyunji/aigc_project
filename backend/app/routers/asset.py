@@ -89,6 +89,8 @@ async def extract_assets(task_id: str, db: Session = Depends(get_db)):
                 name=item.get("name", "")[:200],
                 description=item.get("description", "")[:5000],
                 image_prompt=item.get("visual_prompt", "")[:2000],
+                spatial_layout=item.get("spatial_layout", "")[:2000] or None,
+                portrait_prompt=item.get("portrait_prompt", "")[:1000] or None,
                 image_status="pending",
             )
             db.add(asset)
@@ -103,11 +105,25 @@ async def extract_assets(task_id: str, db: Session = Depends(get_db)):
     db.commit()
     logger.info(f"[{task_id}] 资产提取完成: {extracted} 个资产")
 
+    # 服装字段体检：找出缺规范「服装」字段的角色，提示补全
+    wardrobe_warnings = []
+    try:
+        from app.services.consistency import check_wardrobe_completeness
+        wardrobe_warnings = check_wardrobe_completeness(task_id)
+        if wardrobe_warnings:
+            logger.warning(
+                f"[{task_id}] 以下角色缺规范服装字段，跨镜头服装可能不一致: "
+                f"{wardrobe_warnings}"
+            )
+    except Exception as e:
+        logger.warning(f"[{task_id}] 服装字段体检失败（非致命）: {e}")
+
     return AssetExtractResponse(
         extracted=extracted,
         characters=chars,
         scenes=scenes,
         props=props,
+        wardrobe_warnings=wardrobe_warnings,
     )
 
 
@@ -322,6 +338,20 @@ async def _run_asset_image_gen(task_id: str, asset_id: str):
         asset.image_oss_key = oss_key
         asset.image_status = "success"
         db.commit()
+
+        # 角色额外生成正脸定妆图（纯 GPT-Image-2 体系的外貌锚点）
+        if asset.category == "character" and (asset.portrait_prompt or "").strip():
+            try:
+                portrait_path, portrait_url = await gpt_image_service.generate_portrait(
+                    task_id, asset.name, asset.portrait_prompt
+                )
+                asset.portrait_path = portrait_path
+                asset.portrait_url = portrait_url
+                db.commit()
+                logger.info(f"[{task_id}] 角色正脸定妆图已生成: {asset.name}")
+            except Exception as e:
+                logger.warning(f"[{task_id}] 角色定妆图生成失败（非致命）: {asset.name}: {e}")
+
         event_bus.publish(task_id, "asset", {
             "asset_id": asset.id,
             "task_id": task_id,
