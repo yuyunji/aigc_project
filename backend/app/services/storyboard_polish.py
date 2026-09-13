@@ -5,8 +5,9 @@
 1. mood 规范化：严格两字情绪词，非法值兜底
 2. 景别衔接校验：连续 >= 3 镜同景别时自动改景别（不再依赖模型自觉）
 3. 转场规范化：把模型输出任意转场词归一化到白名单，非法/空缺兜底为「硬切」
-4. 情绪断崖检测：相邻镜头情绪跳变超阈值时记警告（不强制改写，日志可审计）
-5. 段首转场：第一个镜头强制「淡入」（开场专用）
+4. 档位白名单归一化：景别/构图/角度去组合值（全景→近景）与括号注解（框架构图（门框））
+5. 情绪断崖检测：相邻镜头情绪跳变超阈值时记警告（不强制改写，日志可审计）
+6. 段首转场：第一个镜头强制「淡入」（开场专用）
 
 所有规则是纯函数式、确定性、可单测的；不改动原有字段结构，
 只在 scene_list 的 dict 上做原地修正，下游 _save_storyboards 无需改动。
@@ -14,6 +15,7 @@
 from __future__ import annotations
 
 import logging
+import re
 
 logger = logging.getLogger(__name__)
 
@@ -37,6 +39,65 @@ _TRANSITION_ALIASES = {
 
 # 景别阶梯（用于自动改景别时选取相邻档位）
 _SHOT_SIZES = ["大特写", "特写", "近景", "中近", "中景", "全景", "远景"]
+
+# 拍摄角度白名单（与 director_storyboard_skill.CAMERA_ANGLE_OPTIONS 保持同步）
+_CAMERA_ANGLES = ["平视", "俯拍", "仰拍", "侧拍", "低角度仰拍"]
+
+# 构图白名单（与 director_storyboard_skill.COMPOSITION_OPTIONS 保持同步）
+_COMPOSITIONS = ["居中构图", "三分构图", "框架构图", "侧偏构图"]
+
+# 景别别名：模型常写成「中近景」，白名单档位是「中近」，不做映射会静默穿透
+_SHOT_SIZE_ALIASES = {
+    "中近景": "中近", "中全景": "中景", "中特写": "中近", "远景全景": "远景",
+    "全远景": "远景", "大远景": "远景", "半身景": "中景", "半身": "中景",
+}
+
+# 构图别名
+_COMPOSITION_ALIASES = {
+    "对称构图": "居中构图", "中心构图": "居中构图", "中央构图": "居中构图",
+    "三分法构图": "三分构图", "井字构图": "三分构图", "九宫格构图": "三分构图",
+    "框式构图": "框架构图", "前景框架构图": "框架构图", "框景构图": "框架构图",
+    "侧偏式构图": "侧偏构图",
+}
+
+# 描述性后缀（模型爱加注解，如「框架构图（门框）」「近景，带手部细节」）
+_ANNOTATION_TAIL_RE = re.compile(r"[\s]*[（(【\[].*$|[\s]*[，,、;；].*$")
+
+
+def _normalize_from_whitelist(
+    value: str | None,
+    whitelist: list[str],
+    aliases: dict[str, str],
+    fallback: str = "",
+) -> str:
+    """
+    把模型输出的档位词归一化到白名单的单个值。
+
+    处理顺序：去注解 → 白名单直命中 → 别名映射 → 包含匹配（长词优先）→ 兜底。
+    返回空串表示无法识别，交回调用方决定是否兜底（不猜测比猜错更安全）。
+    """
+    raw = _ANNOTATION_TAIL_RE.sub("", (value or "").strip()).strip()
+    if not raw:
+        return ""
+    if raw in whitelist:
+        return raw
+    if raw in aliases:
+        return aliases[raw]
+    # 组合值（全景→近景 / 中景/近景）：取第一个可识别档位
+    for part in re.split(r"[→\-–~—/／+]", raw):
+        part = part.strip()
+        if not part:
+            continue
+        if part in whitelist:
+            return part
+        if part in aliases:
+            return aliases[part]
+    # 包含匹配（长词优先，避免「中近景」被「中景」抢先命中）
+    for key in sorted(whitelist, key=len, reverse=True):
+        if key in raw:
+            return key
+    logger.debug(f"档位词无法识别，兜底 {fallback!r}: {raw!r}")
+    return fallback
 
 
 def _normalize_transition(value: str | None, scene_number: int) -> str:
@@ -80,6 +141,26 @@ def _alternate_shot_size(prev: str, current: str) -> str:
     return current_clean
 
 
+def _normalize_enum_field(
+    scene: dict,
+    field: str,
+    whitelist: list[str],
+    aliases: dict[str, str],
+    scene_number: int,
+    fallback: str,
+) -> None:
+    """把 scene[field] 归一化到白名单单值；无值时不写回（保持「未提供」语义）。"""
+    raw = (scene.get(field) or "").strip()
+    if not raw:
+        return
+    normalized = _normalize_from_whitelist(raw, whitelist, aliases, fallback)
+    if normalized and normalized != raw:
+        logger.warning(
+            f"镜头 {scene_number} {field} 非白名单值 {raw!r}，归一化为 {normalized!r}"
+        )
+    scene[field] = normalized
+
+
 def polish_storyboards(scene_list: list[dict]) -> list[dict]:
     """
     对解析后的 scene_list 做确定性后处理，返回原地修正后的同一列表。
@@ -87,8 +168,9 @@ def polish_storyboards(scene_list: list[dict]) -> list[dict]:
     规则：
     1. 每个镜头的 mood 归一化为两字
     2. 每个镜头的 transition 归一化到白名单；首镜强制淡入
-    3. 连续 >= 3 镜同景别 -> 从第 3 镜起自动改景别（同时同步到 image_prompt 文案）
-    4. 情绪断崖检测 -> 记录 warning 日志，不改写
+    3. shot_size / composition / camera_angle 归一化到白名单的单个值（去组合值与括号注解）
+    4. 连续 >= 3 镜同景别 -> 从第 3 镜起自动改景别（同时同步到 image_prompt 文案）
+    5. 情绪断崖检测 -> 记录 warning 日志，不改写
     """
     if not scene_list:
         return scene_list
@@ -108,7 +190,12 @@ def polish_storyboards(scene_list: list[dict]) -> list[dict]:
             scene.get("transition"), scene_num
         )
 
-        # 3) 景别交替校验（连续 >=3 同景别才干预，避免过度改写）
+        # 3) 档位白名单归一化（组合值 / 括号注解 / 白名单外写法）
+        _normalize_enum_field(scene, "shot_size", _SHOT_SIZES, _SHOT_SIZE_ALIASES, scene_num, "")
+        _normalize_enum_field(scene, "composition", _COMPOSITIONS, _COMPOSITION_ALIASES, scene_num, "")
+        _normalize_enum_field(scene, "camera_angle", _CAMERA_ANGLES, {}, scene_num, "")
+
+        # 4) 景别交替校验（连续 >=3 同景别才干预，避免过度改写）
         if i >= 2:
             cur = (scene.get("shot_size") or "").strip()
             p1 = ((scene_list[i - 1].get("shot_size") or "").strip())
@@ -123,7 +210,7 @@ def polish_storyboards(scene_list: list[dict]) -> list[dict]:
                     scene["image_prompt"] = old_ip.replace(cur, new_size, 1)
                 scene["shot_size"] = new_size
 
-        # 4) 情绪断崖检测（日志仅提示）
+        # 5) 情绪断崖检测（日志仅提示）
         if i >= 1:
             prev_mood = scene_list[i - 1].get("mood", "")
             cur_mood = scene.get("mood", "")

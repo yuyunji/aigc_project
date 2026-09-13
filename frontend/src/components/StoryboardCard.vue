@@ -1,158 +1,232 @@
 <!--
-  分镜脚本卡片 — 导演镜头脚本渲染 + 按分镜操作按钮（视频/重试）
-  两代格式并存：
-  - 导演镜头脚本（director-storyboard skill）：description 为「### 镜头NN：…」开头的 Markdown，整块渲染
-  - 旧一行式模板：无该前缀，走下方 meta 卡片兜底布局
+  导演镜头脚本卡片流
+
+  每张卡片 = 一个完整的导演镜头脚本（原文渲染，不重新拼装，保证与生成结果一字不差）。
+  点「✏️ 编辑」整块进入可编辑状态，保存后由服务端按同一套解析逻辑重算
+  景别/角度/运镜/情绪/构图/转场等派生字段，视频生成链路立即生效。
+
+  另有全局风格卡（片头风格首行，注入所有 prompt）独立置顶。
+
+  两代数据兼容：raw_script 为空时回落到 description（旧数据是重新拼装的 Markdown）。
 -->
 <template>
-  <div class="storyboard-card" v-loading="loading">
+  <div class="storyboard-cards" v-loading="loading">
     <el-empty v-if="!loading && scenes.length === 0" description="分镜脚本尚未生成" />
 
-    <div v-else class="storyboard-timeline">
-      <div v-for="scene in scenes" :key="scene.id" class="timeline-item">
-        <div class="timeline-marker">
-          <span class="scene-num">{{ scene.scene_number }}</span>
+    <template v-else>
+      <!-- ── 全局风格（片头首行）── -->
+      <el-card v-if="globalPrefix || globalEditing" shadow="never" class="sb-card style-card">
+        <div class="sb-head">
+          <span class="sb-badge style-badge">🎨</span>
+          <h3 class="sb-title">全局风格</h3>
+          <span class="sb-sep">·</span>
+          <span class="sb-sub">注入所有图片 / 视频提示词首段</span>
+          <div class="sb-head-actions">
+            <el-button v-if="!globalEditing" size="small" plain @click="startEditGlobal">✏️ 编辑</el-button>
+            <template v-else>
+              <el-button size="small" type="primary" :loading="saving" @click="saveGlobal">保存</el-button>
+              <el-button size="small" plain @click="cancelEditGlobal">取消</el-button>
+            </template>
+          </div>
+        </div>
+        <div v-if="!globalEditing" class="sb-body sb-script">{{ globalPrefix }}</div>
+        <el-input
+          v-else
+          v-model="globalDraft"
+          type="textarea"
+          :autosize="{ minRows: 3, maxRows: 12 }"
+          class="sb-editor"
+          placeholder="画风 + 世界观 + 色调 + 材质质感 + 氛围，并附主要角色外观设定"
+        />
+      </el-card>
+
+      <!-- ── 逐镜卡片 ── -->
+      <el-card
+        v-for="scene in scenes"
+        :key="scene.id"
+        shadow="never"
+        class="sb-card"
+        :class="{ 'is-editing': isEditing(scene) }"
+      >
+        <div class="sb-head">
+          <span class="sb-badge">{{ String(scene.scene_number).padStart(2, "0") }}</span>
+          <h3 class="sb-title">{{ sceneTitle(scene) }}</h3>
+          <el-tag v-if="scene.duration_seconds" size="small" effect="plain" round class="sb-duration">
+            {{ scene.duration_seconds }}s
+          </el-tag>
+          <div class="sb-head-actions">
+            <el-button v-if="!isEditing(scene)" size="small" plain @click="startEdit(scene)">✏️ 编辑</el-button>
+            <template v-else>
+              <el-button size="small" type="primary" :loading="saving === scene.scene_number" @click="save(scene)">保存</el-button>
+              <el-button size="small" plain @click="cancelEdit(scene)">取消</el-button>
+            </template>
+          </div>
         </div>
 
-        <el-card shadow="hover" class="timeline-card">
-          <!-- 标题行 -->
-          <div class="scene-header">
-            <h3 class="scene-title">{{ sceneTitle(scene) }}</h3>
-            <el-tag size="small" effect="plain" round v-if="scene.duration_seconds">
-              {{ scene.duration_seconds }}s
-            </el-tag>
+        <!-- 脚本正文：原文直出 -->
+        <div v-if="!isEditing(scene)" class="sb-body sb-script">{{ scriptBody(scene) }}</div>
+        <el-input
+          v-else
+          v-model="drafts[scene.scene_number]"
+          type="textarea"
+          :autosize="{ minRows: 10, maxRows: 40 }"
+          class="sb-editor"
+          placeholder="镜头NN：标题（时长：N秒）…"
+        />
+
+        <!-- 完整生成 Prompt -->
+        <el-collapse v-if="!isEditing(scene) && scene.image_prompt" class="prompt-collapse">
+          <el-collapse-item title="📝 完整生成 Prompt">
+            <p class="prompt-text">{{ scene.image_prompt }}</p>
+          </el-collapse-item>
+        </el-collapse>
+
+        <!-- ── 操作区 ── -->
+        <div v-if="!isEditing(scene)" class="sb-actions">
+          <div class="actions-row">
+            <el-button
+              size="small"
+              :type="videoState(scene.scene_number) === 'success' ? 'warning' : 'success'"
+              plain
+              :loading="videoState(scene.scene_number) === 'running'"
+              :disabled="videoState(scene.scene_number) === 'running'"
+              @click="$emit('generate-video', scene.scene_number)"
+            >
+              {{ videoState(scene.scene_number) === 'success' ? '🔄 重新生成视频' : '🎥 生成视频' }}
+            </el-button>
+            <el-button
+              v-if="mediaState(scene.scene_number, 'any') === 'failed'"
+              size="small" type="warning" plain
+              @click="$emit('retry', scene.scene_number)"
+            >🔄 重试</el-button>
           </div>
 
-          <!-- 模板格式字段：镜头景别 / 拍摄角度 / 运镜 / 构图 / 情绪 -->
-          <div class="scene-meta">
-            <span v-if="scene.shot_size" class="meta-item"><span class="meta-icon">🎞️</span>{{ scene.shot_size }}</span>
-            <span v-if="scene.camera_angle" class="meta-item"><span class="meta-icon">📐</span>{{ scene.camera_angle }}</span>
-            <span v-if="scene.camera_movement" class="meta-item"><span class="meta-icon">🎥</span>{{ scene.camera_movement }}</span>
-            <span v-if="scene.composition" class="meta-item"><span class="meta-icon">🖼️</span>{{ scene.composition }}</span>
-            <span v-if="scene.mood" class="meta-item mood-tag"><span class="meta-icon">🎭</span>{{ scene.mood }}</span>
-            <span v-if="scene.transition" class="meta-item transition-tag"><span class="meta-icon">🎬</span>{{ scene.transition }}</span>
+          <div class="status-row" v-if="getSceneMedia(scene.scene_number).length">
+            <el-tag
+              v-for="m in getSceneMedia(scene.scene_number)"
+              :key="m.id" size="small" :type="statusType(m)" effect="plain" round class="status-tag"
+            >🎥 {{ statusLabel(m) }}</el-tag>
           </div>
 
-          <!-- 导演镜头脚本：完整块渲染（氛围 / 分秒画面 / 对白 / 摄影与视觉要求 / 衔接桥接） -->
-          <div
-            v-if="isDirectorScript(scene)"
-            class="director-script"
-            v-html="renderMarkdown(scene.description)"
-          />
-
-          <!-- 旧版模板兜底布局 -->
-          <template v-else>
-            <div v-if="scene.subject" class="scene-subject">
-              <div class="section-label">👤 画面主体人物</div>
-              <p>{{ scene.subject }}</p>
-            </div>
-
-            <div v-if="scene.environment" class="scene-environment">
-              <div class="section-label">📍 场景环境</div>
-              <p>{{ scene.environment }}</p>
-            </div>
-
-            <!-- 旧版兼容：出场角色 / 画面描述 / 台词 -->
-            <div v-if="scene.characters_in_scene" class="scene-characters">
-              <span class="char-label">👥 出场：</span>
-              <el-tag v-for="char in splitChars(scene.characters_in_scene)" :key="char" size="small" effect="plain" class="char-tag">{{ char }}</el-tag>
-            </div>
-
-            <div v-if="scene.visual_description && !scene.subject" class="scene-visual">
-              <div class="section-label">🖼️ 画面描述</div>
-              <p>{{ scene.visual_description }}</p>
-            </div>
-
-            <div v-if="scene.dialogue_text && scene.dialogue_text !== '@无' && scene.dialogue_text !== '@无对白'" class="scene-dialogue">
-              <div class="section-label">💬 台词对白</div>
-              <div class="dialogue-line is-speaker">{{ scene.dialogue_text }}</div>
-            </div>
-
-            <!-- 旧版台词兜底 -->
-            <div v-if="!scene.dialogue_text && scene.dialogue" class="scene-dialogue">
-              <div class="section-label">💬 台词</div>
-              <div v-for="(line, i) in splitLines(scene.dialogue)" :key="i" class="dialogue-line" :class="{ 'is-speaker': isSpeakerLine(line) }">{{ line }}</div>
-            </div>
-          </template>
-
-          <!-- 完整 prompt 折叠 -->
-          <el-collapse v-if="scene.image_prompt" class="prompt-collapse">
-            <el-collapse-item title="📝 完整生成 Prompt">
-              <p class="prompt-text">{{ scene.image_prompt }}</p>
-            </el-collapse-item>
-          </el-collapse>
-
-          <!-- ── 操作区 ── -->
-          <div class="scene-actions">
-            <div class="actions-row">
-              <el-button
-                size="small"
-                :type="videoState(scene.scene_number) === 'success' ? 'warning' : 'success'"
-                plain
-                :loading="videoState(scene.scene_number) === 'running'"
-                :disabled="videoState(scene.scene_number) === 'running'"
-                @click="$emit('generate-video', scene.scene_number)"
-              >
-                {{ videoState(scene.scene_number) === 'success' ? '🔄 重新生成视频' : '🎥 生成视频' }}
-              </el-button>
-              <el-button v-if="mediaState(scene.scene_number, 'any') === 'failed'" size="small" type="warning" plain @click="$emit('retry', scene.scene_number)">
-                🔄 重试
-              </el-button>
-            </div>
-
-            <!-- 状态标签 -->
-            <div class="status-row" v-if="getSceneMedia(scene.scene_number).length">
-              <el-tag v-for="m in getSceneMedia(scene.scene_number)" :key="m.id" size="small" :type="statusType(m)" effect="plain" round class="status-tag">
-                🎥 {{ statusLabel(m) }}
-              </el-tag>
-            </div>
-
-            <!-- 错误信息 -->
-            <div v-if="getSceneMedia(scene.scene_number).some(m => m.status === 'failed' && m.error_message)" class="error-row">
-              <el-alert
-                v-for="m in getSceneMedia(scene.scene_number).filter(x => x.status === 'failed' && x.error_message)"
-                :key="m.id"
-                :title="m.error_message"
-                type="error"
-                :closable="false"
-                show-icon
-                class="error-alert"
-              />
-            </div>
+          <div v-if="getSceneMedia(scene.scene_number).some(m => m.status === 'failed' && m.error_message)" class="error-row">
+            <el-alert
+              v-for="m in getSceneMedia(scene.scene_number).filter(x => x.status === 'failed' && x.error_message)"
+              :key="m.id" :title="m.error_message" type="error" :closable="false" show-icon class="error-alert"
+            />
           </div>
-        </el-card>
-      </div>
-    </div>
+        </div>
+      </el-card>
+    </template>
   </div>
 </template>
 
 <script setup>
-import { renderMarkdown } from "../utils/markdown";
+import { ref, reactive } from "vue";
+import { ElMessage } from "element-plus";
+import { updateStoryboard, updateGlobalPrefix } from "../api/task";
 
 const props = defineProps({
   scenes: { type: Array, default: () => [] },
   loading: { type: Boolean, default: false },
   taskId: { type: String, default: "" },
   mediaAssets: { type: Array, default: () => [] },
+  /** 任务级全局风格前缀（片头风格首行） */
+  globalPrefix: { type: String, default: "" },
 });
 
-defineEmits(["generate-video", "retry"]);
+const emit = defineEmits(["generate-video", "retry", "saved"]);
 
-// 导演镜头脚本的 description 以「### 镜头NN：」开头（见 backend `_parse_director_storyboard`）
-function isDirectorScript(scene) {
-  return (scene.description || "").startsWith("### 镜头");
+// 编辑态：场景号 -> 草稿文本（同时充当「是否正在编辑」的判定）
+const drafts = reactive({});
+const saving = ref(null);        // 正在保存的场景号；"global" 表示全局风格卡
+const globalEditing = ref(false);
+const globalDraft = ref("");
+
+function isEditing(scene) {
+  return Object.prototype.hasOwnProperty.call(drafts, scene.scene_number);
 }
 
-// 标题优先用 scene_title；旧数据若还是「镜头N」这类占位则回落到序号
+/** 可编辑原文：优先 raw_script；旧数据回落到 description */
+function editableText(scene) {
+  return scene.raw_script || scene.description || "";
+}
+
+/**
+ * 卡片正文 = 去掉标题行的脚本原文。
+ * 标题（含时长）已经在卡头单独展示，正文里不再重复。
+ */
+function scriptBody(scene) {
+  const text = editableText(scene);
+  return text.replace(/^[ \t#>*]*镜头\s*\d+\s*[：:][^\n]*(\n|$)/, "").trim() || text;
+}
+
 function sceneTitle(scene) {
-  const t = scene.scene_title || "";
-  return t && t !== `镜头${scene.scene_number}` ? t : `镜头 ${scene.scene_number}`;
+  const t = (scene.scene_title || "").trim();
+  return t || `镜头 ${scene.scene_number}`;
 }
+
+function startEdit(scene) {
+  drafts[scene.scene_number] = editableText(scene);
+}
+
+function cancelEdit(scene) {
+  delete drafts[scene.scene_number];
+}
+
+function startEditGlobal() {
+  globalDraft.value = props.globalPrefix || "";
+  globalEditing.value = true;
+}
+
+function cancelEditGlobal() {
+  globalEditing.value = false;
+  globalDraft.value = "";
+}
+
+async function saveGlobal() {
+  const text = globalDraft.value.trim();
+  if (!text) { ElMessage.warning("全局风格不能为空"); return; }
+  saving.value = "global";
+  try {
+    await updateGlobalPrefix(props.taskId, text);
+    ElMessage.success("全局风格已保存，将用于后续视频 / 图片生成");
+    globalEditing.value = false;
+    emit("saved");
+  } catch (e) { /* 全局拦截器已提示 */ }
+  finally { saving.value = null; }
+}
+
+async function save(scene) {
+  const text = (drafts[scene.scene_number] || "").trim();
+  if (!text) { ElMessage.warning("脚本内容不能为空"); return; }
+
+  saving.value = scene.scene_number;
+  try {
+    const res = await updateStoryboard(props.taskId, scene.scene_number, text);
+    const updated = res.data || {};
+    delete drafts[scene.scene_number];
+
+    // 机器字段被服务端归一化（组合值/括号注解/非白名单档位）时明确告知，
+    // 否则用户会以为自己的改动被吞了
+    const changed = ["shot_size", "camera_angle", "camera_movement", "mood", "composition", "transition"]
+      .filter((k) => scene[k] && updated[k] && scene[k] !== updated[k]);
+    if (changed.length) {
+      ElMessage.success(
+        `已保存；${changed.map((k) => `${scene[k]} → ${updated[k]}`).join("、")} 已按模板白名单归一化`
+      );
+    } else {
+      ElMessage.success("已保存");
+    }
+    // 让父组件重新拉取，拿到重解析后的字段
+    emit("saved");
+  } catch (e) { /* 全局拦截器已提示 */ }
+  finally { saving.value = null; }
+}
+
+// ── 视频状态 ──
 
 function getSceneMedia(sceneNumber) {
-  return (props.mediaAssets || []).filter(
-    (m) => m.scene_number === sceneNumber
-  );
+  return (props.mediaAssets || []).filter((m) => m.scene_number === sceneNumber);
 }
 
 function videoState(sceneNumber) { return mediaState(sceneNumber, "video"); }
@@ -172,64 +246,116 @@ function statusType(m) {
 function statusLabel(m) {
   return m.status === "success" ? "已完成" : m.status === "failed" ? "失败" : "生成中";
 }
-
-function splitChars(text) { return (text || "").split(/[、,，]/).map((s) => s.trim()).filter(Boolean); }
-function splitLines(text) { return (text || "").split("\n").filter((l) => l.trim()); }
-function isSpeakerLine(line) { return /^[^：:]+[：:]/.test(line); }
 </script>
 
 <style lang="scss" scoped>
-.storyboard-timeline { position: relative; padding-left: 44px; }
-.storyboard-timeline::before { content: ""; position: absolute; left: 19px; top: 0; bottom: 0; width: 2px; background: linear-gradient(to bottom, var(--color-primary), var(--color-primary-light) 80%, transparent); }
-.timeline-item { position: relative; margin-bottom: 24px; }
-.timeline-item:last-child { margin-bottom: 0; }
-.timeline-marker { position: absolute; left: -44px; top: 16px; width: 40px; height: 40px; display: flex; align-items: center; justify-content: center; }
-.scene-num { width: 34px; height: 34px; border-radius: 50%; background: var(--color-primary); color: #fff; font-size: 14px; font-weight: 700; display: flex; align-items: center; justify-content: center; box-shadow: 0 2px 10px rgba(99, 102, 241, 0.35); }
-.timeline-card { transition: box-shadow 0.2s, border-color 0.2s; }
-.timeline-card:hover { box-shadow: 0 4px 24px rgba(99, 102, 241, 0.15) !important; border-color: var(--color-primary-light); }
-.scene-header { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
-.scene-title { font-size: 16px; font-weight: 700; color: var(--color-text-primary); margin: 0; }
-.scene-meta { display: flex; flex-wrap: wrap; gap: 14px; margin-bottom: 10px; }
-.meta-item { font-size: 13px; color: var(--color-text-secondary); display: flex; align-items: center; gap: 4px; }
-.scene-characters { display: flex; align-items: center; gap: 6px; margin-bottom: 12px; flex-wrap: wrap; }
-.char-label { font-size: 13px; color: var(--color-text-secondary); }
-.char-tag { font-size: 12px; }
-.scene-visual { margin-bottom: 12px; }
-.scene-visual p { font-size: 13px; line-height: 1.7; color: var(--color-text-primary); }
-.scene-subject { margin-bottom: 10px; }
-.scene-subject p { font-size: 13px; line-height: 1.7; color: var(--color-text-primary); }
-.scene-environment { margin-bottom: 10px; }
-.scene-environment p { font-size: 13px; line-height: 1.7; color: var(--color-text-accent); }
-.scene-dialogue { margin-bottom: 8px; }
-.dialogue-line { font-size: 13px; line-height: 1.7; color: var(--color-text-primary); padding: 4px 0; padding-left: 8px; border-left: 2px solid var(--color-primary-light); }
-.dialogue-line.is-speaker { font-weight: 600; color: var(--color-primary-dark); border-left-color: var(--color-primary); }
-.section-label { font-size: 12px; font-weight: 600; color: var(--color-text-tertiary); text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 4px; }
-
-/* 导演镜头脚本整块 */
-.director-script {
-  font-size: 13px;
-  line-height: 1.8;
-  color: var(--color-text-primary);
-  margin-bottom: 4px;
-  :deep(h4) { font-size: 14px; font-weight: 700; color: var(--color-primary-dark); margin: 0 0 8px; }
-  :deep(p) { margin: 0 0 8px; }
-  :deep(ul) { margin: 0 0 8px; padding-left: 20px; list-style: disc; }
-  :deep(li) { margin-bottom: 4px; }
-  :deep(strong) { display: block; margin: 10px 0 4px; font-size: 12px; color: var(--color-text-tertiary); letter-spacing: 0.5px; }
-  :deep(code) { font-size: 12px; background: var(--color-primary-bg); color: var(--color-primary-dark); padding: 1px 5px; border-radius: 4px; font-family: inherit; }
+.storyboard-cards {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-md, 16px);
 }
-.mood-tag { background: var(--color-primary-bg); padding: 2px 8px; border-radius: 4px; }
-.transition-tag { background: rgba(245,158,11,0.12); padding: 2px 8px; border-radius: 4px; color: var(--color-warning, #d97706); }
-.prompt-collapse { margin-top: 10px; }
-.prompt-collapse :deep(.el-collapse-item__header) { font-size: 12px; color: var(--color-text-tertiary); border-bottom: none; }
-.prompt-collapse :deep(.el-collapse-item__wrap) { border-bottom: none; }
-.prompt-text { font-size: 12px; line-height: 1.6; color: var(--color-text-secondary); background: var(--color-bg-secondary); padding: 10px; border-radius: 6px; word-break: break-all; white-space: pre-wrap; }
 
-.scene-actions { margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--color-border-light); }
+.sb-card {
+  border-radius: var(--radius-lg, 12px);
+  transition: box-shadow 0.2s, border-color 0.2s;
+
+  &:hover { box-shadow: 0 4px 24px rgba(99, 102, 241, 0.12); }
+  &.is-editing { border-color: var(--color-primary); box-shadow: 0 0 0 3px var(--color-primary-bg); }
+
+  :deep(.el-card__body) { padding: 18px 22px; }
+}
+
+.style-card {
+  background: var(--color-bg-secondary);
+  :deep(.el-card__body) { padding: 14px 22px; }
+}
+
+.sb-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 12px;
+}
+
+.sb-badge {
+  flex: 0 0 auto;
+  min-width: 34px;
+  height: 34px;
+  padding: 0 8px;
+  border-radius: 9px;
+  background: var(--color-primary);
+  color: #fff;
+  font-size: 14px;
+  font-weight: 700;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+
+  &.style-badge { font-size: 16px; }
+}
+
+.sb-title {
+  font-size: 16px;
+  font-weight: 700;
+  color: var(--color-text-primary);
+  margin: 0;
+}
+
+.sb-sep { color: var(--color-text-tertiary); }
+.sb-sub { font-size: 12px; color: var(--color-text-tertiary); }
+.sb-head-actions { margin-left: auto; display: flex; gap: 8px; }
+
+/* 脚本正文：保留原文换行与缩进 */
+.sb-body {
+  font-size: 13px;
+  line-height: 1.85;
+  color: var(--color-text-primary);
+}
+
+.sb-script {
+  white-space: pre-wrap;
+  word-break: break-word;
+  background: var(--color-bg-secondary);
+  border-left: 3px solid var(--color-primary-light);
+  border-radius: 0 8px 8px 0;
+  padding: 12px 16px;
+  max-height: 460px;
+  overflow-y: auto;
+}
+
+.sb-editor {
+  :deep(.el-textarea__inner) {
+    font-family: inherit;
+    font-size: 13px;
+    line-height: 1.8;
+    white-space: pre-wrap;
+  }
+}
+
+.prompt-collapse {
+  margin-top: 12px;
+  :deep(.el-collapse-item__header) { font-size: 12px; color: var(--color-text-tertiary); border-bottom: none; }
+  :deep(.el-collapse-item__wrap) { border-bottom: none; }
+}
+
+.prompt-text {
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--color-text-secondary);
+  background: var(--color-bg-secondary);
+  padding: 10px;
+  border-radius: 6px;
+  word-break: break-all;
+  white-space: pre-wrap;
+}
+
+.sb-actions { margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--color-border-light); }
 .actions-row { display: flex; gap: 8px; flex-wrap: wrap; }
 .status-row { margin-top: 8px; display: flex; gap: 6px; flex-wrap: wrap; }
 .status-tag { font-size: 11px; }
 .error-row { margin-top: 8px; }
-.error-alert { margin-top: 4px; }
-.error-alert :deep(.el-alert__title) { font-size: 12px; }
+.error-alert {
+  margin-top: 4px;
+  :deep(.el-alert__title) { font-size: 12px; }
+}
 </style>

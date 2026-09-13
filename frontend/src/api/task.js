@@ -47,3 +47,17 @@ export function getCharacters(taskId) {
 export function getStoryboards(taskId) {
   return apiClient.get(`/api/results/${taskId}/storyboards`);
 }
+
+/** 保存某镜编辑后的导演脚本原文（服务端按同一套解析逻辑重算派生字段） */
+export function updateStoryboard(taskId, sceneNumber, rawScript) {
+  return apiClient.put(`/api/results/${taskId}/storyboards/${sceneNumber}`, {
+    raw_script: rawScript,
+  });
+}
+
+/** 保存编辑后的全局风格前缀（片头风格首行，注入所有 prompt） */
+export function updateGlobalPrefix(taskId, globalPrefix) {
+  return apiClient.put(`/api/results/${taskId}/global-prefix`, {
+    global_prefix: globalPrefix,
+  });
+}

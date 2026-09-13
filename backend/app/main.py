@@ -2,6 +2,7 @@
 FastAPI 应用入口
 挂载路由、配置 CORS、注册异常处理、管理生命周期事件
 """
+import asyncio
 import logging
 import logging.handlers
 import os
@@ -16,6 +17,7 @@ from fastapi.staticfiles import StaticFiles
 from app.config import settings
 from app.database import init_db
 from app.routers import upload, task, result, media, asset, stream
+from app.services.task_manager import task_manager
 from app.services.task_queue import task_queue
 from app.utils.exceptions import register_exception_handlers
 
@@ -80,6 +82,12 @@ async def lifespan(app: FastAPI):
     logger.info("正在初始化数据库...")
     init_db()
     logger.info("数据库初始化完成")
+
+    # 队列不持久化：重启会强杀在跑的任务，残留的 running/pending 必须对账，
+    # 否则它们会永远停在原进度（且因 status=running 无法删除）。
+    stale = await asyncio.to_thread(task_manager.fail_stale_running_tasks)
+    if stale:
+        logger.warning(f"已标记 {stale} 个残留任务为失败（服务重启中断）")
 
     logger.info("正在启动任务队列 worker...")
     await task_queue.start()

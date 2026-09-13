@@ -365,7 +365,8 @@ class LLMService:
         模板与硬约束见 app/services/director_storyboard_skill.py。
 
         Returns:
-            片头定调段 + 逐镜块 + 导演阐述 + POST_CONSTRAINT 行的完整文本
+            全局风格首行 + 逐镜块（标题时长 / 氛围段 / 分秒画面 / 对白 /
+            摄影与视觉要求 / 衔接桥接标注）的完整文本
         """
         combined = "\n\n---\n\n".join(text_chunks)
         estimated = self._estimate_tokens(combined)

@@ -31,6 +31,9 @@ class Task(Base):
     post_constraint: Mapped[str] = mapped_column(
         Text, nullable=True, comment="后置强制约束（人设统一/无崩坏/无文字字幕等，注入 prompt 末尾）"
     )
+    opening_section: Mapped[str] = mapped_column(
+        Text, nullable=True, comment="片头定调段原文（旧格式遗留：作品信息卡 + 开场定调）"
+    )
     error_message: Mapped[str] = mapped_column(Text, nullable=True, comment="失败时错误信息")
     created_at: Mapped[datetime] = mapped_column(
         DateTime, default=datetime.utcnow

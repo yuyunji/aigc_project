@@ -53,8 +53,10 @@
               :loading="storyboardsLoading"
               :taskId="selectedTaskId"
               :mediaAssets="mediaAssets"
+              :globalPrefix="globalPrefix"
               @generate-video="onGenerateVideo"
               @retry="onRetryScene"
+              @saved="onStoryboardSaved"
             />
           </el-tab-pane>
 
@@ -85,7 +87,7 @@
 import { ref, computed, onMounted, onUnmounted } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { ElMessage, ElMessageBox } from "element-plus";
-import { getTaskList, getStoryboards } from "../api/task";
+import { getTaskList, getTask, getStoryboards } from "../api/task";
 import { getVideos, generateSceneVideo, retryScene } from "../api/media";
 import { extractAssets, getAssets, createAsset, updateAsset, deleteAsset, generateAssetImage, uploadAssetImage } from "../api/asset";
 import StoryboardCard from "../components/StoryboardCard.vue";
@@ -101,6 +103,7 @@ const tasksLoading = ref(false);
 const storyboards = ref([]);
 const mediaAssets = ref([]);
 const storyboardsLoading = ref(false);
+const globalPrefix = ref("");   // 任务级全局风格前缀（片头风格首行，可编辑）
 const activeTab = ref("storyboards");
 
 // 资产拆解
@@ -145,8 +148,14 @@ async function loadResults(taskId) {
   await Promise.allSettled([
     (async () => { storyboardsLoading.value = true; try { const r = await getStoryboards(taskId); storyboards.value = r.data || []; } catch(e){} finally { storyboardsLoading.value = false; } })(),
     (async () => { try { const v = await getVideos(taskId); mediaAssets.value = v.data.assets || []; } catch(e){} })(),
+    (async () => { try { const t = await getTask(taskId); globalPrefix.value = t.data.global_prefix || ""; } catch(e){} })(),
     (async () => { await loadAssets(taskId); })(),
   ]);
+}
+
+/** 分镜/风格保存后重拉：拿到服务端重解析后的字段（可能被白名单归一化） */
+async function onStoryboardSaved() {
+  await loadResults(selectedTaskId.value);
 }
 
 let taskEvents = null;

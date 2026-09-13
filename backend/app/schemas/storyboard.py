@@ -1,6 +1,17 @@
 """分镜脚本 Schema"""
 from datetime import datetime
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
+
+
+class StoryboardUpdate(BaseModel):
+    """结果页编辑保存：提交整段导演脚本原文，服务端按同一套解析逻辑重算全部字段"""
+
+    raw_script: str = Field(
+        ...,
+        min_length=1,
+        max_length=20000,
+        description="导演镜头脚本原文块（含「镜头NN：标题（时长：N秒）」标题行）",
+    )
 
 
 class StoryboardResponse(BaseModel):
@@ -27,6 +38,7 @@ class StoryboardResponse(BaseModel):
     quality_notes: str | None = None
     transition: str | None = None
     dialogue_text: str | None = None
+    raw_script: str | None = None
     created_at: datetime
 
     class Config:

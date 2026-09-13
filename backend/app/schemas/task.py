@@ -29,6 +29,12 @@ class TaskResponse(BaseModel):
         from_attributes = True
 
 
+class GlobalPrefixUpdate(BaseModel):
+    """结果页编辑全局风格前缀（首行风格 + 角色外观设定，注入所有 prompt 首段）"""
+
+    global_prefix: str = Field(..., max_length=20000, description="全局风格前缀")
+
+
 class TaskListResponse(BaseModel):
     """任务列表"""
     total: int

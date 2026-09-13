@@ -82,4 +82,7 @@ class Storyboard(Base):
     description: Mapped[str] = mapped_column(
         Text, nullable=False, comment="原始 JSON 或完整分镜内容"
     )
+    raw_script: Mapped[str | None] = mapped_column(
+        Text, nullable=True, comment="导演脚本原文块（结果页渲染与编辑的事实来源）"
+    )
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
