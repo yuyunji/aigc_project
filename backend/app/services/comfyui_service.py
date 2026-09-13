@@ -2,7 +2,7 @@
 ComfyUI 本地 MiniMax H3 视频生成服务（图生视频 ref2v）
 通过 ComfyUI HTTP API 提交工作流、轮询、下载视频。
 对应工作流：MiniMax H3 多参生视频（MiniMaxH3ReferenceToVideo）
-支持多张参考图：分镜图 + 角色资产图 + 场景资产图（ref_images.ref_image_0/1/2...）
+支持多张参考图：角色资产图 + 场景资产图（ref_images.ref_image_0/1/2...）
 """
 import asyncio
 import json
@@ -51,11 +51,11 @@ class ComfyUIService:
         image_paths: list[str] | None = None,
         duration: int | None = None,
     ) -> str:
-        """分镜图→视频：上传多张参考图→提交→轮询→下载，返回本地 .mp4 路径"""
+        """参考图→视频：上传多张参考图→提交→轮询→下载，返回本地 .mp4 路径"""
         image_paths = [p for p in (image_paths or []) if p and os.path.isfile(p)][:MAX_REF_IMAGES]
         if not image_paths:
             raise LLMAPIError(
-                f"ComfyUI 图生视频需要参考图，请先生成分镜 {scene_number} 的图片/资产图"
+                f"ComfyUI 图生视频需要参考图，请先生成分镜 {scene_number} 的角色/场景资产图"
             )
 
         # 1. 上传所有参考图到 ComfyUI input 目录

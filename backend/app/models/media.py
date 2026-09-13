@@ -1,5 +1,5 @@
 """
-媒体资源模型 —— 分镜图片 / 视频片段 / 配音音频 / 合成视频
+媒体资源模型 —— 视频片段 / 配音音频 / 合成视频
 """
 import uuid
 from datetime import datetime
@@ -12,7 +12,7 @@ from app.database import Base
 class MediaAsset(Base):
     """
     统一媒体资源表，通过 asset_type 区分类型：
-    - image:      分镜图片（MiniMax image-01 / GPT-Image-2 生成）
+    - image:      历史遗留（分镜图生成已下线，仅存量数据）
     - video:      视频片段（MiniMax-H3 文生视频 / Seedance 图生视频）
     - audio:      角色配音（Volcengine TTS）
     - composite:  最终合成视频（FFmpeg 拼接）

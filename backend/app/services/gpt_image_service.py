@@ -1,6 +1,5 @@
 """
-GPT-Image-2 分镜图片生成服务 (OpenAI Images API)
-单分镜图片生成（替代 MiniMax image-01）
+GPT-Image-2 图片生成服务 (OpenAI Images API) —— 资产参考图 / 角色定妆图
 """
 import logging
 import os
@@ -23,29 +22,6 @@ class GptImageService:
         self.size = settings.openai_image_size
         self.quality = settings.openai_image_quality
         self.media_dir = settings.media_dir
-
-    # ------------------------------------------------------------------
-    # 单分镜图片生成
-    # ------------------------------------------------------------------
-
-    async def generate_scene_image(
-        self, task_id: str, scene_number: int, prompt: str
-    ) -> tuple[str, str]:
-        """
-        为单个分镜生成图片。
-
-        Returns:
-            (本地图片文件路径, 远程HTTPS URL)
-        """
-        if not self.api_key:
-            raise LLMAPIError("OpenAI API Key 未配置，请在 .env 中设置 OPENAI_API_KEY")
-
-        image_url = await self._generate(prompt)
-        logger.info(f"[{task_id}] GPT-Image-2 图片已生成 (分镜 {scene_number})")
-
-        local_path = await self._download(task_id, scene_number, image_url)
-        logger.info(f"[{task_id}] 图片已下载: {local_path}")
-        return local_path, image_url
 
     # ------------------------------------------------------------------
     # 底层 API 调用
@@ -93,22 +69,6 @@ class GptImageService:
     # ------------------------------------------------------------------
     # 下载
     # ------------------------------------------------------------------
-
-    async def _download(
-        self, task_id: str, scene_number: int, image_url: str
-    ) -> str:
-        """下载图片到 media/{task_id}/images/"""
-        output_dir = os.path.join(self.media_dir, task_id, "images")
-        os.makedirs(output_dir, exist_ok=True)
-        filename = f"scene_{scene_number:03d}_gpt.png"
-        filepath = os.path.join(output_dir, filename)
-
-        async with httpx.AsyncClient(timeout=60) as client:
-            resp = await client.get(image_url)
-            resp.raise_for_status()
-        with open(filepath, "wb") as f:
-            f.write(resp.content)
-        return filepath
 
     async def _download_asset(
         self, task_id: str, asset_name: str, image_url: str

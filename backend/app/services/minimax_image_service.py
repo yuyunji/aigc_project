@@ -1,7 +1,5 @@
 """
-MiniMax image-01 分镜图片生成服务
-支持 subject_reference 角色参考图确保跨分镜角色一致性
-参考小云雀流程：角色定妆图 → 分镜图片（嵌入定妆图作为 visual anchor）
+MiniMax image-01 角色定妆图生成服务（正面 / 侧面）
 """
 import logging
 import os
@@ -29,7 +27,6 @@ class MiniMaxImageService:
         """
         生成角色定妆照（正面半身、清晰五官、完整服装）。
         返回 (本地文件路径, MiniMax原始URL)。
-        原始URL用于后续分镜图生成时作为 subject_reference。
         """
         prompt = (
             f"{settings.image_style or ''}. "
@@ -62,27 +59,6 @@ class MiniMaxImageService:
         # 保存为 {name}_side.png，缓存 URL 为 {name}_side.url
         local_path = await self._download_ref_side(task_id, character_name, image_url)
         return local_path, image_url
-
-    async def generate_image(
-        self,
-        task_id: str,
-        scene_number: int,
-        prompt: str,
-        ref_image_url: str | None = None,
-    ) -> str:
-        """
-        为单个分镜生成图片。ref_image_url 为角色定妆照的 HTTPS URL，
-        作为 subject_reference 传入确保角色一致性。
-        """
-        if not self.api_key:
-            raise LLMAPIError("MiniMax API Key 未配置，请在 .env 中设置 MINIMAX_API_KEY")
-
-        image_url = await self._generate(prompt, ref_image_url)
-        logger.info(f"[{task_id}] MiniMax image-01 已生成 (分镜 {scene_number})")
-
-        local_path = await self._download(task_id, scene_number, image_url)
-        logger.info(f"[{task_id}] 图片已下载: {local_path}")
-        return local_path
 
     async def _generate(self, prompt: str, ref_image_url: str | None = None) -> str:
         """调用 MiniMax image-01 API，返回图片 URL"""
@@ -151,23 +127,6 @@ class MiniMaxImageService:
         with open(filepath, "wb") as f:
             f.write(resp.content)
         return filepath
-
-    async def _download(
-        self, task_id: str, scene_number: int, image_url: str
-    ) -> str:
-        """下载图片到 media/{task_id}/images/"""
-        output_dir = os.path.join(self.media_dir, task_id, "images")
-        os.makedirs(output_dir, exist_ok=True)
-        filename = f"scene_{scene_number:03d}.png"
-        filepath = os.path.join(output_dir, filename)
-
-        async with httpx.AsyncClient(timeout=60) as client:
-            resp = await client.get(image_url)
-            resp.raise_for_status()
-        with open(filepath, "wb") as f:
-            f.write(resp.content)
-        return filepath
-
 
 # 全局单例
 minimax_image_service = MiniMaxImageService()

@@ -1,10 +1,10 @@
 """
 级联任务编排器
-完整 8 阶段链路：
+完整链路：
   原著文本 → 分片预处理 → 剧本大纲 → 人物角色设定 → 分镜脚本
-  → 分镜图片生成 → 图生视频 → 角色配音 → 字幕合成
+  → 图生视频 → 角色配音 → 字幕合成
 
-阶段 1-4 为文本链路，阶段 5-8 为媒体链路。
+阶段 1-4 为文本链路，后续为媒体链路。
 媒体链路在文本链完成后自动触发（可在配置中关闭）。
 """
 import asyncio
@@ -24,15 +24,8 @@ from app.models.media import MediaAsset
 from app.services.text_processor import TextProcessor
 from app.services.llm_service import llm_service
 from app.services.minimax_service import minimax_service
-from app.services.gpt_image_service import gpt_image_service
 from app.services.video_composer import video_composer
 from app.services.storyboard_polish import polish_storyboards
-from app.services.consistency import (
-    build_shot_context,
-    render_character_bible_text,
-    render_scene_lock_text,
-    render_prop_lock_text,
-)
 from app.services.events import event_bus
 from app.utils.exceptions import (
     LLMAPIError,
@@ -633,13 +626,9 @@ class TaskManager:
             base_progress = 78 + int((i / max(total, 1)) * 15)
             self._update_status(task_id, "running", progress=base_progress)
 
-            # 查找已有分镜图的远程 URL，传给 MiniMax
-            image_url = self._get_latest_image_url(task_id, scene_num)
-
-            # 从资产拆解中查找匹配的角色/场景/道具图片
+            # 从资产拆解中查找匹配的角色/场景/道具图片，传给 MiniMax
             asset_ref = TaskManager._get_asset_reference_for_shot(task_id, scene)
-            if not image_url and asset_ref["image_url"]:
-                image_url = asset_ref["image_url"]
+            image_url = asset_ref["image_url"]
             logger.info(f"[{task_id}] 分镜{scene_num}/{total} MiniMax {'图生视频' if image_url else '文生视频'}中... (进度 {base_progress}%)")
 
             # 构建 prompt：全局前缀 + 模板 image_prompt + 资产参考（强约束）
@@ -760,130 +749,8 @@ class TaskManager:
     # 按分镜独立触发方法
     # ------------------------------------------------------------------
 
-    async def generate_scene_image(self, task_id: str, scene: dict) -> dict:
-        """为单个分镜生成图片，支持 MiniMax image-01 / GPT-Image-2 切换"""
-        scene_num = scene["scene_number"]
-        visual = scene.get("visual_description", "") or scene.get("description", "")
-        prebuilt = scene.get("image_prompt", "")
-
-        if prebuilt and prebuilt.strip():
-            prompt = prebuilt
-        elif visual and visual.strip():
-            prompt = visual[:500]
-        else:
-            prompt = "cinematic scene, dramatic lighting, 4K, high quality"
-
-        # ── 提取出场角色的外貌特征（GPT-Image-2 / MiniMax 共用）──
-        char_appearance = self._get_characters_appearance(
-            task_id, scene.get("characters_in_scene", "")
-        )
-        char_names = self._parse_char_names(scene.get("characters_in_scene", ""))
-
-        self._cleanup_asset(task_id, scene_num, "image")
-        asset = self._create_media_asset(task_id, "image", scene_num, prompt)
-
-        provider = settings.image_provider
-
-        # ── 强制注入全局前缀 ──
-        global_prefix = TaskManager._get_global_prefix(task_id)
-
-        try:
-            if provider == "gpt-image-2":
-                # GPT-Image-2: 统一一致性上下文（角色圣经 + 场景几何锁 + 道具锁）
-                ctx = build_shot_context(task_id, scene)
-                prev_shot = self._get_prev_shot_context(task_id, scene_num)
-
-                prompt_parts = []
-                if global_prefix:
-                    prompt_parts.append(
-                        f"REQUIRED STYLE: 2D Japanese anime, cel-shaded, hand-drawn look. "
-                        f"Style guide: {global_prefix[:500]}"
-                    )
-                else:
-                    prompt_parts.append(
-                        "REQUIRED STYLE: 2D anime, Japanese animation, cel-shaded, "
-                        "flat colors, hand-drawn look, NO 3D rendering, NO photorealism."
-                    )
-                if settings.image_style:
-                    prompt_parts.append(f"Style detail: {settings.image_style}")
-                if prev_shot:
-                    prompt_parts.append(
-                        f"PREVIOUS SHOT (continue seamlessly from its ending): {prev_shot}"
-                    )
-                prompt_parts.append(f"Scene description: {prompt}")
-                full_prompt = "\n\n".join(prompt_parts)
-
-                from app.services.prompt_builder import prompt_builder
-                try:
-                    english_prompt = await prompt_builder.build_image_prompt(full_prompt)
-                except Exception:
-                    english_prompt = full_prompt
-
-                # 一致性上下文（英文，绕过 200 词压缩直接拼在前面）
-                consistency: list[str] = []
-                # 状态感知：把当前镜头的 subject+environment 传给着装锁做状态匹配
-                shot_text = f"{scene.get('subject', '')} {scene.get('environment', '')}"
-                char_bible = render_character_bible_text(ctx["characters"], shot_text)
-                if char_bible:
-                    consistency.append(
-                        "CHARACTER BIBLE (identical in every shot, never alter appearance):\n"
-                        + char_bible
-                    )
-                scene_lock = render_scene_lock_text(ctx["scene"])
-                if scene_lock:
-                    consistency.append(scene_lock)
-                prop_lock = render_prop_lock_text(ctx["props"])
-                if prop_lock:
-                    consistency.append(prop_lock)
-                # 兜底：无资产角色时用文字外貌描述
-                if char_appearance and not ctx["characters"]:
-                    consistency.append(
-                        "Character appearances (MUST keep consistent across all scenes):\n"
-                        + char_appearance
-                    )
-                if consistency:
-                    english_prompt = "\n\n".join(consistency) + "\n\n" + english_prompt
-
-                path, remote_url = await asyncio.wait_for(
-                    gpt_image_service.generate_scene_image(task_id, scene_num, english_prompt),
-                    timeout=600,
-                )
-            else:
-                remote_url = None
-                # MiniMax image-01（默认）: 全局前缀 + subject_reference 图像锚定方案
-                if global_prefix:
-                    prompt = f"{global_prefix}. {prompt}"
-                elif settings.image_style:
-                    prompt = f"{settings.image_style}. {prompt}"
-                ref_image_url = None
-                if char_names and char_appearance:
-                    ref_image_url = await self._ensure_character_ref(
-                        task_id, char_names[0], char_appearance
-                    )
-                if ref_image_url:
-                    prompt = (
-                        f"{prompt}. "
-                        f"Keep the character ({char_names[0]}) appearance consistent with the reference image"
-                    )
-                from app.services.minimax_image_service import minimax_image_service
-                path = await asyncio.wait_for(
-                    minimax_image_service.generate_image(task_id, scene_num, prompt, ref_image_url),
-                    timeout=180,
-                )
-
-            oss_key = await self._upload_to_oss(path)
-            self._update_media_asset(asset.id, "success", file_path=path, file_url=remote_url, oss_key=oss_key)
-            return {"status": "success", "file_path": path, "asset_id": asset.id}
-        except asyncio.TimeoutError:
-            self._update_media_asset(asset.id, "failed", error="图片生成超时（600s），请稍后重试")
-            return {"status": "failed", "error": "图片生成超时，请稍后重试"}
-        except Exception as e:
-            err = str(e)[:500]
-            self._update_media_asset(asset.id, "failed", error=err)
-            return {"status": "failed", "error": err}
-
     async def generate_scene_video(self, task_id: str, scene: dict) -> dict:
-        """为单个分镜生成视频（MiniMax-H3，优先使用已生成的分镜图作参考）"""
+        """为单个分镜生成视频（MiniMax-H3）"""
         scene_num = scene["scene_number"]
         visual = scene.get("visual_description", "") or scene.get("description", "")
         camera = scene.get("camera_movement", "")
@@ -899,11 +766,9 @@ class TaskManager:
 
         self._cleanup_asset(task_id, scene_num, "video")
 
-        # 查找已有分镜图的远程 URL，同时查资产拆解图片
-        image_url = self._get_latest_image_url(task_id, scene_num)
+        # 从资产拆解中查找匹配的角色/场景/道具图片
         asset_ref = TaskManager._get_asset_reference_for_shot(task_id, scene)
-        if not image_url and asset_ref["image_url"]:
-            image_url = asset_ref["image_url"]
+        image_url = asset_ref["image_url"]
 
         # 构造 prompt（全局前缀 + 模板 image_prompt + 资产参考，强约束）
         global_prefix = TaskManager._get_global_prefix(task_id)
@@ -951,7 +816,7 @@ class TaskManager:
         try:
             if settings.video_provider == "comfyui":
                 from app.services.comfyui_service import comfyui_service
-                image_paths = self._get_reference_image_paths(task_id, scene, scene_num)
+                image_paths = self._get_reference_image_paths(task_id, scene)
                 path = await asyncio.wait_for(
                     comfyui_service.generate_video(
                         task_id, scene_num, prompt,
@@ -1000,115 +865,10 @@ class TaskManager:
             db.close()
 
     @staticmethod
-    def _get_characters_appearance(task_id: str, characters_in_scene: str) -> str:
-        """从角色库中提取出场角色的外貌描述，用于注入图片 prompt"""
-        if not characters_in_scene or not characters_in_scene.strip():
-            return ""
-
-        # 解析角色名（中/英逗号、顿号分隔）
-        import re
-        names = re.split(r"[,，、]+", characters_in_scene)
-        names = [n.strip() for n in names if n.strip()]
-        if not names:
-            return ""
-
-        db = SessionLocal()
-        try:
-            chars = (
-                db.query(Character)
-                .filter(Character.task_id == task_id, Character.name.in_(names))
-                .all()
-            )
-            if not chars:
-                return ""
-
-            lines = []
-            for c in chars:
-                desc = c.description or ""
-                # 提取外貌相关字段：外貌、特征、衣着、发型、身材
-                appearance_parts = []
-                for m in re.finditer(
-                    r"[-*]\s*\*\*(.+?)\*\*[：:]\s*(.+)", desc
-                ):
-                    key = m.group(1).strip()
-                    value = m.group(2).strip()
-                    if any(
-                        kw in key
-                        for kw in ["外貌", "特征", "衣着", "发型", "身材", "标志", "细节", "服饰", "体型", "面容"]
-                    ):
-                        appearance_parts.append(value)
-
-                if appearance_parts:
-                    lines.append(f"{c.name}: {'; '.join(appearance_parts)}")
-
-            return "\n".join(lines)
-        finally:
-            db.close()
-
-    @staticmethod
-    def _get_prev_shot_context(task_id: str, scene_num: int) -> str:
-        """拿前一镜的画面描述，作为当前镜头的叙事衔接（中文，交给翻译）"""
-        db = SessionLocal()
-        try:
-            prev = (
-                db.query(Storyboard)
-                .filter(
-                    Storyboard.task_id == task_id,
-                    Storyboard.scene_number == scene_num - 1,
-                )
-                .first()
-            )
-            if not prev:
-                return ""
-            return (prev.image_prompt or prev.visual_description or "")[:300]
-        finally:
-            db.close()
-
-    @staticmethod
-    def _get_latest_image_url(task_id: str, scene_number: int) -> str | None:
-        """获取分镜最新图片的远程 URL，用于视频生成参考"""
-        db = SessionLocal()
-        try:
-            asset = (
-                db.query(MediaAsset)
-                .filter(
-                    MediaAsset.task_id == task_id,
-                    MediaAsset.scene_number == scene_number,
-                    MediaAsset.asset_type == "image",
-                    MediaAsset.status == "success",
-                )
-                .order_by(MediaAsset.created_at.desc())
-                .first()
-            )
-            return asset.file_url if asset else None
-        finally:
-            db.close()
-
-    @staticmethod
-    def _get_latest_image_path(task_id: str, scene_number: int) -> str | None:
-        """获取分镜最新图片的本地路径，用于 ComfyUI 图生视频参考"""
-        db = SessionLocal()
-        try:
-            asset = (
-                db.query(MediaAsset)
-                .filter(
-                    MediaAsset.task_id == task_id,
-                    MediaAsset.scene_number == scene_number,
-                    MediaAsset.asset_type == "image",
-                    MediaAsset.status == "success",
-                )
-                .order_by(MediaAsset.created_at.desc())
-                .first()
-            )
-            return asset.file_path if asset else None
-        finally:
-            db.close()
-
-    @staticmethod
-    def _get_reference_image_paths(task_id: str, shot: dict, scene_number: int) -> list[str]:
+    def _get_reference_image_paths(task_id: str, shot: dict) -> list[str]:
         """
         收集 ComfyUI 图生视频的多张参考图本地路径。
-        顺序：分镜图 → 角色图 → 场景图（只保留存在的文件，去重）。
+        顺序：角色图 → 场景图（只保留存在的文件，去重）。
         """
         import os
 
@@ -1130,13 +890,7 @@ class TaskManager:
         paths: list[str] = []
         seen: set[str] = set()
 
-        # 1. 分镜图（画面构图/叙事参考）
-        shot_path = TaskManager._get_latest_image_path(task_id, scene_number)
-        if shot_path and os.path.isfile(shot_path):
-            paths.append(shot_path)
-            seen.add(os.path.abspath(shot_path))
-
-        # 2. 资产图（角色 + 场景）
+        # 资产图（角色 + 场景）
         subject = shot.get("subject", "") or ""
         environment = shot.get("environment", "") or ""
         combined_text = f"{subject} {environment}"
@@ -1172,15 +926,6 @@ class TaskManager:
             db.close()
 
         return paths
-
-    @staticmethod
-    def _parse_char_names(characters_in_scene: str) -> list[str]:
-        """从 characters_in_scene 字段解析角色名列表"""
-        if not characters_in_scene or not characters_in_scene.strip():
-            return []
-        import re
-        names = re.split(r"[,，、]+", characters_in_scene)
-        return [n.strip() for n in names if n.strip()]
 
     @staticmethod
     def _get_asset_reference_for_shot(task_id: str, shot: dict) -> dict:
@@ -1245,76 +990,6 @@ class TaskManager:
             return {"image_url": image_url, "ref_text": ref_text}
         finally:
             db.close()
-
-    @staticmethod
-    async def _ensure_character_ref(
-        task_id: str, char_name: str, char_appearance: str
-    ) -> str | None:
-        """
-        小云雀服化道Agent：确保角色有定妆参考图（正面+侧面 2 张）。
-        已存在则返回缓存 URL，否则调用 MiniMax image-01 生成。
-        返回正面 HTTPS URL（用于 API subject_reference）或 None。
-        """
-        from app.services.minimax_image_service import minimax_image_service
-        import os
-
-        ref_dir = os.path.join(settings.media_dir, task_id, "characters")
-        os.makedirs(ref_dir, exist_ok=True)
-        safe_name = char_name.replace("/", "_").replace("\\", "_")[:50]
-        ref_path = os.path.join(ref_dir, f"{safe_name}.png")
-        url_path = os.path.join(ref_dir, f"{safe_name}.url")
-        side_ref_path = os.path.join(ref_dir, f"{safe_name}_side.png")
-        side_url_path = os.path.join(ref_dir, f"{safe_name}_side.url")
-
-        # 已存在正面 + 侧面缓存 → 直接返回正面 URL
-        if os.path.isfile(ref_path) and os.path.isfile(url_path):
-            with open(url_path, "r") as uf:
-                cached_url = uf.read().strip()
-            if cached_url:
-                return cached_url
-        elif os.path.isfile(url_path):
-            with open(url_path, "r") as uf:
-                cached_url = uf.read().strip()
-            if cached_url:
-                return cached_url
-
-        # 提取外貌 prompt
-        lines = char_appearance.split("\n")
-        appearance_text = ""
-        for line in lines:
-            if line.startswith(f"{char_name}:"):
-                appearance_text = line[len(char_name) + 1:].strip()
-                break
-        if not appearance_text:
-            appearance_text = char_appearance.split("\n")[0] if char_appearance else ""
-        if not appearance_text:
-            return None
-
-        try:
-            # 生成正面定妆照
-            local_path, https_url = await minimax_image_service.generate_character_portrait(
-                task_id, char_name, appearance_text
-            )
-            with open(url_path, "w") as uf:
-                uf.write(https_url)
-            logger.info(f"[{task_id}] 角色正面定妆照已生成: {char_name}")
-
-            # 生成侧面定妆照（仅当不存在时）
-            if not os.path.isfile(side_ref_path) or not os.path.isfile(side_url_path):
-                try:
-                    _, side_url = await minimax_image_service.generate_character_portrait_side(
-                        task_id, char_name, appearance_text
-                    )
-                    with open(side_url_path, "w") as uf:
-                        uf.write(side_url)
-                    logger.info(f"[{task_id}] 角色侧面定妆照已生成: {char_name}")
-                except Exception as e:
-                    logger.warning(f"[{task_id}] 角色侧面照生成失败（非致命）: {char_name}: {e}")
-
-            return https_url
-        except Exception as e:
-            logger.warning(f"[{task_id}] 角色参考图生成失败: {char_name}: {e}")
-            return None
 
     @staticmethod
     def _create_media_asset(

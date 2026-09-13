@@ -7,12 +7,6 @@ from pydantic import BaseModel, Field
 
 # ── 请求 ──
 
-class GenerateImageRequest(BaseModel):
-    """分镜图片生成请求"""
-    task_id: str = Field(..., description="任务 ID")
-    scene_numbers: list[int] | None = Field(None, description="指定分镜序号，不传则全部生成")
-
-
 class GenerateVideoRequest(BaseModel):
     """图生视频请求"""
     task_id: str = Field(..., description="任务 ID")

@@ -54,7 +54,6 @@
               :taskId="selectedTaskId"
               :mediaAssets="mediaAssets"
               @generate-video="onGenerateVideo"
-              @generate-image="onGenerateImage"
               @retry="onRetryScene"
             />
           </el-tab-pane>
@@ -87,7 +86,7 @@ import { ref, computed, onMounted, onUnmounted } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { ElMessage } from "element-plus";
 import { getTaskList, getStoryboards } from "../api/task";
-import { getVideos, getImages, generateSceneVideo, generateSceneImage, retryScene } from "../api/media";
+import { getVideos, generateSceneVideo, retryScene } from "../api/media";
 import { extractAssets, getAssets, createAsset, updateAsset, deleteAsset, generateAssetImage, uploadAssetImage } from "../api/asset";
 import StoryboardCard from "../components/StoryboardCard.vue";
 import AssetBreakdownTab from "../components/AssetBreakdownTab.vue";
@@ -144,7 +143,7 @@ async function onTaskSelect(taskId) {
 async function loadResults(taskId) {
   await Promise.allSettled([
     (async () => { storyboardsLoading.value = true; try { const r = await getStoryboards(taskId); storyboards.value = r.data || []; } catch(e){} finally { storyboardsLoading.value = false; } })(),
-    (async () => { try { const [i, v] = await Promise.all([getImages(taskId), getVideos(taskId)]); mediaAssets.value = [...(i.data.assets||[]), ...(v.data.assets||[])]; } catch(e){} })(),
+    (async () => { try { const v = await getVideos(taskId); mediaAssets.value = v.data.assets || []; } catch(e){} })(),
     (async () => { await loadAssets(taskId); })(),
   ]);
 }
@@ -162,8 +161,8 @@ function setupTaskEvents(taskId) {
         error_message: data.error_message, file_path: data.file_path, url: data.url,
       };
       // 同分镜同类型只保留最新一条：真实事件到达时清掉本地占位和旧的 success/failed 记录，
-      // 否则重新生成时旧 success 残留会导致按钮不 loading、图片不反显
-      if (data.scene_number != null && (data.asset_type === "image" || data.asset_type === "video")) {
+      // 否则重新生成时旧 success 残留会导致按钮不 loading、视频不反显
+      if (data.scene_number != null && data.asset_type === "video") {
         mediaAssets.value = mediaAssets.value.filter(
           m => !(m.asset_type === data.asset_type && m.scene_number === data.scene_number && m.id !== data.asset_id)
         );
@@ -219,12 +218,6 @@ function markSceneIdle(sceneNumber, assetType) {
   );
 }
 
-async function onGenerateImage(sn) {
-  const provider = localStorage.getItem("aigc_image_provider") || "minimax";
-  markSceneRunning(sn, "image");
-  try { await generateSceneImage(selectedTaskId.value, sn, provider); ElMessage.success(`分镜${sn} 图片生成已启动`); }
-  catch(e) { markSceneIdle(sn, "image"); }
-}
 async function onGenerateVideo(sn) {
   const provider = localStorage.getItem("aigc_video_provider") || "minimax-h3";
   markSceneRunning(sn, "video");

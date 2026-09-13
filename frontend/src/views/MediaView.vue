@@ -6,7 +6,7 @@
   <div class="media-page">
     <div class="page-hero">
       <h1 class="page-title">🎬 视频生成</h1>
-      <p class="page-desc">分镜→图片→视频→拼接：AI 级联媒体生成</p>
+      <p class="page-desc">分镜→视频→拼接：AI 级联媒体生成</p>
     </div>
 
     <!-- 任务选择 -->
@@ -118,7 +118,6 @@ const compositeLoading = ref(false);
 const compositing = ref(false);
 
 // Provider 选择（从 localStorage 恢复）
-const imageProvider = ref(localStorage.getItem("aigc_image_provider") || "minimax");
 const videoProvider = ref(localStorage.getItem("aigc_video_provider") || "minimax-h3");
 
 async function loadEligibleTasks() {
@@ -156,7 +155,6 @@ async function triggerGeneration() {
 }
 
 function onProviderChange() {
-  localStorage.setItem("aigc_image_provider", imageProvider.value);
   localStorage.setItem("aigc_video_provider", videoProvider.value);
 }
 

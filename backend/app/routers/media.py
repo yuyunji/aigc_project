@@ -1,8 +1,6 @@
 """
 媒体资源接口
-POST /api/media/{task_id}/generate    — 触发图片生成（Stage 5）
 GET  /api/media/{task_id}/pipeline    — 全流程进度
-GET  /api/media/{task_id}/images      — 分镜图片列表
 GET  /api/media/{task_id}/videos      — 视频片段列表
 GET  /api/media/{task_id}/audio       — 配音列表
 GET  /api/media/{task_id}/composite   — 合成视频
@@ -24,19 +22,10 @@ from app.schemas.media import (
 )
 from app.services.task_manager import task_manager
 from app.services.events import event_bus
-from app.config import settings
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/media", tags=["媒体资源"])
-
-
-@router.post("/{task_id}/scene/{scene_number}/image")
-async def generate_scene_image(task_id: str, scene_number: int):
-    """为单个分镜生成图片 (Wan-X-Turbo)"""
-    scene = _get_scene_or_404(task_id, scene_number)
-    asyncio.create_task(_run_scene_image(task_id, scene))
-    return {"status": "started", "task_id": task_id, "scene_number": scene_number}
 
 
 @router.post("/{task_id}/scene/{scene_number}/video")
@@ -101,14 +90,6 @@ def _get_scene_or_404(task_id: str, scene_number: int) -> dict:
         }
     finally:
         db.close()
-
-
-async def _run_scene_image(task_id: str, scene: dict):
-    """后台执行单个分镜图片生成"""
-    try:
-        await task_manager.generate_scene_image(task_id, scene)
-    except Exception as e:
-        logger.exception(f"[{task_id}] scene {scene['scene_number']} image: {e}")
 
 
 async def _run_scene_video(task_id: str, scene: dict):
@@ -264,20 +245,15 @@ def get_pipeline_progress(task_id: str, db: Session = Depends(get_db)):
         success = sum(1 for a in matching if a.status == "success")
         return len(matching), success
 
-    img_total, img_ok = count_by_type("image")
     vid_total, vid_ok = count_by_type("video")
-    aud_total, aud_ok = count_by_type("audio")
     comp_total, comp_ok = count_by_type("composite")
-    # Provider 标签
-    img_label = "GPT-Image-2" if settings.image_provider == "gpt-image-2" else "MiniMax image-01"
     vid_label = "MiniMax-H3"
 
     stages = [
         {"stage": 1, "label": "文本预处理", "status": "success" if task.progress >= 20 else ("running" if task.progress >= 10 else "pending"), "progress": min(task.progress, 20), "assets_count": 0},
         {"stage": 2, "label": "AI分镜师 分镜拆解", "status": "success" if task.progress >= 78 else ("running" if task.progress >= 25 else "pending"), "progress": min(max(task.progress - 20, 0), 58), "assets_count": 0},
-        {"stage": 3, "label": f"{img_label} 图片", "status": "success" if img_total > 0 and img_ok == img_total else ("running" if img_total > 0 else "pending"), "progress": 0, "assets_count": img_ok},
-        {"stage": 4, "label": f"{vid_label} 视频", "status": "success" if vid_total > 0 and vid_ok == vid_total else ("running" if vid_total > 0 else "pending"), "progress": 0, "assets_count": vid_ok},
-        {"stage": 5, "label": "视频拼接", "status": "success" if comp_ok > 0 else ("running" if comp_total > 0 else "pending"), "progress": 0, "assets_count": comp_ok},
+        {"stage": 3, "label": f"{vid_label} 视频", "status": "success" if vid_total > 0 and vid_ok == vid_total else ("running" if vid_total > 0 else "pending"), "progress": 0, "assets_count": vid_ok},
+        {"stage": 4, "label": "视频拼接", "status": "success" if comp_ok > 0 else ("running" if comp_total > 0 else "pending"), "progress": 0, "assets_count": comp_ok},
     ]
 
     return PipelineProgressResponse(
@@ -285,62 +261,6 @@ def get_pipeline_progress(task_id: str, db: Session = Depends(get_db)):
         task_status=task.status,
         stages=stages,
     )
-
-
-@router.get("/{task_id}/images", response_model=MediaAssetListResponse)
-def get_images(task_id: str, db: Session = Depends(get_db)):
-    _get_task_or_404(task_id, db)
-    assets = (
-        db.query(MediaAsset)
-        .filter(MediaAsset.task_id == task_id, MediaAsset.asset_type == "image")
-        .order_by(MediaAsset.scene_number.asc())
-        .all()
-    )
-    return MediaAssetListResponse(
-        total=len(assets),
-        assets=[MediaAssetResponse.model_validate(a) for a in assets],
-    )
-
-
-@router.post("/{task_id}/images/generate-all")
-async def generate_all_images(task_id: str):
-    """一键为所有分镜生成图片"""
-    db = SessionLocal()
-    try:
-        task = db.query(Task).filter(Task.id == task_id).first()
-        if not task:
-            raise HTTPException(status_code=404, detail=f"任务 {task_id} 不存在")
-
-        scenes = (
-            db.query(Storyboard)
-            .filter(Storyboard.task_id == task_id)
-            .order_by(Storyboard.scene_number.asc())
-            .all()
-        )
-        if not scenes:
-            raise HTTPException(status_code=400, detail="该任务尚无分镜")
-
-        scene_list = [{
-            "scene_number": s.scene_number,
-            "scene_title": s.scene_title or "",
-            "location": s.location or "",
-            "time_of_day": s.time_of_day or "",
-            "characters_in_scene": s.characters_in_scene or "",
-            "camera_movement": s.camera_movement or "",
-            "dialogue": s.dialogue or "",
-            "subject": s.subject or "",
-            "environment": s.environment or "",
-            "visual_description": s.visual_description or s.description or "",
-            "image_prompt": s.image_prompt or "",
-            "description": s.description or "",
-        } for s in scenes]
-
-        for scene in scene_list:
-            asyncio.create_task(_run_scene_image(task_id, scene))
-
-        return {"status": "started", "task_id": task_id, "count": len(scene_list)}
-    finally:
-        db.close()
 
 
 @router.get("/{task_id}/videos", response_model=MediaAssetListResponse)

@@ -70,28 +70,9 @@
             </el-collapse-item>
           </el-collapse>
 
-          <!-- 生成的分镜图片 -->
-          <div v-if="getSceneImage(scene.scene_number)" class="scene-image">
-            <img
-              :src="getMediaUrl(getSceneImage(scene.scene_number))"
-              :alt="`分镜 ${scene.scene_number}`"
-              loading="lazy"
-            />
-          </div>
-
           <!-- ── 操作区 ── -->
           <div class="scene-actions">
             <div class="actions-row">
-              <el-button
-                size="small"
-                type="primary"
-                plain
-                :loading="imageState(scene.scene_number) === 'running'"
-                :disabled="imageState(scene.scene_number) === 'running'"
-                @click="$emit('generate-image', scene.scene_number)"
-              >
-                {{ imageState(scene.scene_number) === 'success' ? '🔄 重新生成图片' : '🖼️ 生成图片' }}
-              </el-button>
               <el-button
                 size="small"
                 :type="videoState(scene.scene_number) === 'success' ? 'warning' : 'success'"
@@ -110,7 +91,7 @@
             <!-- 状态标签 -->
             <div class="status-row" v-if="getSceneMedia(scene.scene_number).length">
               <el-tag v-for="m in getSceneMedia(scene.scene_number)" :key="m.id" size="small" :type="statusType(m)" effect="plain" round class="status-tag">
-                {{ m.asset_type === 'image' ? '🖼️' : '🎥' }} {{ statusLabel(m) }}
+                🎥 {{ statusLabel(m) }}
               </el-tag>
             </div>
 
@@ -134,8 +115,6 @@
 </template>
 
 <script setup>
-import { getMediaUrl } from "../utils/media";
-
 const props = defineProps({
   scenes: { type: Array, default: () => [] },
   loading: { type: Boolean, default: false },
@@ -143,7 +122,7 @@ const props = defineProps({
   mediaAssets: { type: Array, default: () => [] },
 });
 
-defineEmits(["generate-video", "generate-image", "retry"]);
+defineEmits(["generate-video", "retry"]);
 
 function getSceneMedia(sceneNumber) {
   return (props.mediaAssets || []).filter(
@@ -151,19 +130,12 @@ function getSceneMedia(sceneNumber) {
   );
 }
 
-function getSceneImage(sceneNumber) {
-  return getSceneMedia(sceneNumber).find(
-    (m) => m.asset_type === "image" && m.status === "success"
-  );
-}
-
 function videoState(sceneNumber) { return mediaState(sceneNumber, "video"); }
-function imageState(sceneNumber) { return mediaState(sceneNumber, "image"); }
 
 function mediaState(sceneNumber, type) {
   const assets = getSceneMedia(sceneNumber);
   if (type === "any" && assets.some((a) => a.status === "failed")) return "failed";
-  const matching = assets.filter((a) => (type === "image" ? a.asset_type === "image" : a.asset_type === "video"));
+  const matching = assets.filter((a) => a.asset_type === "video");
   if (matching.some((a) => a.status === "success")) return "success";
   if (matching.some((a) => a.status === "running")) return "running";
   return "idle";
@@ -197,20 +169,6 @@ function isSpeakerLine(line) { return /^[^：:]+[：:]/.test(line); }
 .scene-characters { display: flex; align-items: center; gap: 6px; margin-bottom: 12px; flex-wrap: wrap; }
 .char-label { font-size: 13px; color: var(--color-text-secondary); }
 .char-tag { font-size: 12px; }
-.scene-image {
-  margin-bottom: 14px;
-  border-radius: var(--radius-md);
-  overflow: hidden;
-  border: 1px solid var(--color-border-light);
-
-  img {
-    width: 100%;
-    display: block;
-    aspect-ratio: 16 / 9;
-    object-fit: cover;
-  }
-}
-
 .scene-visual { margin-bottom: 12px; }
 .scene-visual p { font-size: 13px; line-height: 1.7; color: var(--color-text-primary); }
 .scene-subject { margin-bottom: 10px; }

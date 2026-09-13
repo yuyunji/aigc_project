@@ -1,6 +1,6 @@
 """
 SSE 状态推送端点
-GET /api/tasks/{task_id}/events —— 单任务事件流（分镜图/视频/资产状态）
+GET /api/tasks/{task_id}/events —— 单任务事件流（视频/资产状态）
 GET /api/events —— 全局事件流（任务列表状态）
 """
 import asyncio
