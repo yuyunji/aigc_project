@@ -1,5 +1,8 @@
 <!--
-  分镜脚本卡片 — 结构化渲染 + 按分镜操作按钮（图片/视频/重试）
+  分镜脚本卡片 — 导演镜头脚本渲染 + 按分镜操作按钮（视频/重试）
+  两代格式并存：
+  - 导演镜头脚本（director-storyboard skill）：description 为「### 镜头NN：…」开头的 Markdown，整块渲染
+  - 旧一行式模板：无该前缀，走下方 meta 卡片兜底布局
 -->
 <template>
   <div class="storyboard-card" v-loading="loading">
@@ -14,7 +17,7 @@
         <el-card shadow="hover" class="timeline-card">
           <!-- 标题行 -->
           <div class="scene-header">
-            <h3 class="scene-title">{{ scene.scene_title || '镜头 ' + scene.scene_number }}</h3>
+            <h3 class="scene-title">{{ sceneTitle(scene) }}</h3>
             <el-tag size="small" effect="plain" round v-if="scene.duration_seconds">
               {{ scene.duration_seconds }}s
             </el-tag>
@@ -30,38 +33,47 @@
             <span v-if="scene.transition" class="meta-item transition-tag"><span class="meta-icon">🎬</span>{{ scene.transition }}</span>
           </div>
 
-          <!-- 模板格式主体内容 -->
-          <div v-if="scene.subject" class="scene-subject">
-            <div class="section-label">👤 画面主体人物</div>
-            <p>{{ scene.subject }}</p>
-          </div>
+          <!-- 导演镜头脚本：完整块渲染（氛围 / 分秒画面 / 对白 / 摄影与视觉要求 / 衔接桥接） -->
+          <div
+            v-if="isDirectorScript(scene)"
+            class="director-script"
+            v-html="renderMarkdown(scene.description)"
+          />
 
-          <div v-if="scene.environment" class="scene-environment">
-            <div class="section-label">📍 场景环境</div>
-            <p>{{ scene.environment }}</p>
-          </div>
+          <!-- 旧版模板兜底布局 -->
+          <template v-else>
+            <div v-if="scene.subject" class="scene-subject">
+              <div class="section-label">👤 画面主体人物</div>
+              <p>{{ scene.subject }}</p>
+            </div>
 
-          <!-- 旧版兼容：出场角色 / 画面描述 / 台词 -->
-          <div v-if="scene.characters_in_scene" class="scene-characters">
-            <span class="char-label">👥 出场：</span>
-            <el-tag v-for="char in splitChars(scene.characters_in_scene)" :key="char" size="small" effect="plain" class="char-tag">{{ char }}</el-tag>
-          </div>
+            <div v-if="scene.environment" class="scene-environment">
+              <div class="section-label">📍 场景环境</div>
+              <p>{{ scene.environment }}</p>
+            </div>
 
-          <div v-if="scene.visual_description && !scene.subject" class="scene-visual">
-            <div class="section-label">🖼️ 画面描述</div>
-            <p>{{ scene.visual_description }}</p>
-          </div>
+            <!-- 旧版兼容：出场角色 / 画面描述 / 台词 -->
+            <div v-if="scene.characters_in_scene" class="scene-characters">
+              <span class="char-label">👥 出场：</span>
+              <el-tag v-for="char in splitChars(scene.characters_in_scene)" :key="char" size="small" effect="plain" class="char-tag">{{ char }}</el-tag>
+            </div>
 
-          <div v-if="scene.dialogue_text && scene.dialogue_text !== '@无' && scene.dialogue_text !== '@无对白'" class="scene-dialogue">
-            <div class="section-label">💬 台词对白</div>
-            <div class="dialogue-line is-speaker">{{ scene.dialogue_text }}</div>
-          </div>
+            <div v-if="scene.visual_description && !scene.subject" class="scene-visual">
+              <div class="section-label">🖼️ 画面描述</div>
+              <p>{{ scene.visual_description }}</p>
+            </div>
 
-          <!-- 旧版台词兜底 -->
-          <div v-if="!scene.dialogue_text && scene.dialogue" class="scene-dialogue">
-            <div class="section-label">💬 台词</div>
-            <div v-for="(line, i) in splitLines(scene.dialogue)" :key="i" class="dialogue-line" :class="{ 'is-speaker': isSpeakerLine(line) }">{{ line }}</div>
-          </div>
+            <div v-if="scene.dialogue_text && scene.dialogue_text !== '@无' && scene.dialogue_text !== '@无对白'" class="scene-dialogue">
+              <div class="section-label">💬 台词对白</div>
+              <div class="dialogue-line is-speaker">{{ scene.dialogue_text }}</div>
+            </div>
+
+            <!-- 旧版台词兜底 -->
+            <div v-if="!scene.dialogue_text && scene.dialogue" class="scene-dialogue">
+              <div class="section-label">💬 台词</div>
+              <div v-for="(line, i) in splitLines(scene.dialogue)" :key="i" class="dialogue-line" :class="{ 'is-speaker': isSpeakerLine(line) }">{{ line }}</div>
+            </div>
+          </template>
 
           <!-- 完整 prompt 折叠 -->
           <el-collapse v-if="scene.image_prompt" class="prompt-collapse">
@@ -115,6 +127,8 @@
 </template>
 
 <script setup>
+import { renderMarkdown } from "../utils/markdown";
+
 const props = defineProps({
   scenes: { type: Array, default: () => [] },
   loading: { type: Boolean, default: false },
@@ -123,6 +137,17 @@ const props = defineProps({
 });
 
 defineEmits(["generate-video", "retry"]);
+
+// 导演镜头脚本的 description 以「### 镜头NN：」开头（见 backend `_parse_director_storyboard`）
+function isDirectorScript(scene) {
+  return (scene.description || "").startsWith("### 镜头");
+}
+
+// 标题优先用 scene_title；旧数据若还是「镜头N」这类占位则回落到序号
+function sceneTitle(scene) {
+  const t = scene.scene_title || "";
+  return t && t !== `镜头${scene.scene_number}` ? t : `镜头 ${scene.scene_number}`;
+}
 
 function getSceneMedia(sceneNumber) {
   return (props.mediaAssets || []).filter(
@@ -179,6 +204,20 @@ function isSpeakerLine(line) { return /^[^：:]+[：:]/.test(line); }
 .dialogue-line { font-size: 13px; line-height: 1.7; color: var(--color-text-primary); padding: 4px 0; padding-left: 8px; border-left: 2px solid var(--color-primary-light); }
 .dialogue-line.is-speaker { font-weight: 600; color: var(--color-primary-dark); border-left-color: var(--color-primary); }
 .section-label { font-size: 12px; font-weight: 600; color: var(--color-text-tertiary); text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 4px; }
+
+/* 导演镜头脚本整块 */
+.director-script {
+  font-size: 13px;
+  line-height: 1.8;
+  color: var(--color-text-primary);
+  margin-bottom: 4px;
+  :deep(h4) { font-size: 14px; font-weight: 700; color: var(--color-primary-dark); margin: 0 0 8px; }
+  :deep(p) { margin: 0 0 8px; }
+  :deep(ul) { margin: 0 0 8px; padding-left: 20px; list-style: disc; }
+  :deep(li) { margin-bottom: 4px; }
+  :deep(strong) { display: block; margin: 10px 0 4px; font-size: 12px; color: var(--color-text-tertiary); letter-spacing: 0.5px; }
+  :deep(code) { font-size: 12px; background: var(--color-primary-bg); color: var(--color-primary-dark); padding: 1px 5px; border-radius: 4px; font-family: inherit; }
+}
 .mood-tag { background: var(--color-primary-bg); padding: 2px 8px; border-radius: 4px; }
 .transition-tag { background: rgba(245,158,11,0.12); padding: 2px 8px; border-radius: 4px; color: var(--color-warning, #d97706); }
 .prompt-collapse { margin-top: 10px; }

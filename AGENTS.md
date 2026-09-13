@@ -4,8 +4,11 @@
 
 ## 项目是什么
 
-一条 AI 级联生成链路：`原著文本 → 文本分片预处理 → 剧本大纲 → 人物角色设定 → 分镜脚本`。
-支持文本粘贴与 `.txt` 上传，异步任务处理，前端轮询展示进度与结果。
+一条 AI 级联生成链路：`原著文本 → 文本分片预处理 → 导演镜头拆解 → 资产拆解 → 按镜视频生成`。
+支持文本粘贴与 `.txt` 上传，异步任务处理，前端轮询与 SSE 展示进度与结果。
+
+分镜阶段按 **导演镜头脚本模板** 输出（片头定调段 + 逐镜块 + 导演阐述），
+模板真源见 `backend/app/services/director_storyboard_skill.py` 与 skill `director-storyboard`。
 
 ## 技术栈
 
@@ -36,12 +39,19 @@ cd frontend
 npm install
 npm run dev
 
+# 前端（构建，产物直接写入 backend/static，由 FastAPI 托管）
+cd frontend && npm run build
+
 # Docker 一键部署
 ANTHROPIC_API_KEY=sk-ant-xxxx docker compose up -d
 ```
 
 - API 文档：http://127.0.0.1:8000/docs
 - 前端：http://localhost:5173
+- `vite.config.js` 的 `build.outDir` 指向 `../backend/static` 且 `emptyOutDir: true`，
+  构建即产出到托管目录并清掉旧 hash 文件：**不要再手动 `cp -r dist backend/static`**
+  （手动复制不清理，会在 `backend/static/assets/` 堆积废弃产物）。
+  Dockerfile 里对应的 COPY 源路径是构建阶段的 `/backend/static`，与仓库的 `backend/` 无关。
 
 ## 配置与密钥
 
@@ -50,7 +60,7 @@ ANTHROPIC_API_KEY=sk-ant-xxxx docker compose up -d
 
 ## 需要遵守的约定
 
-- 级联链路顺序固定：大纲 → 人物 → 分镜，各有独立超时（单次 120s、阶段 130s、总 600s），不要改动顺序。
+- 级联链路顺序固定：文本分片 → 导演镜头拆解（单次 LLM 调用），各有独立超时（单次 600s、阶段按重试次数推算、总 1800s），不要改动顺序。
 - 输入上限 200000 字符，分片 8000 字符，送入 LLM 最多 3 片；这些常量在 `backend/app/config.py`。
 - 错误统一映射为中文可读消息（`backend/app/utils/exceptions.py`）。
 - 前端 3s 轮询。不要引入超出 Demo 边界的能力（登录/鉴权、支付、Redis/K8s、多媒体生成等）。
@@ -58,4 +68,12 @@ ANTHROPIC_API_KEY=sk-ant-xxxx docker compose up -d
 ## 技能
 
 - DSH 从 `.agents/skills/` 加载技能；Claude Code 从 `.claude/skills/` 加载。
-- 当前技能：`character-three-view`（角色三视图）、`ui-ux-pro-max`（UI/UX 设计）、caveman 系列（沟通压缩）。
+- 当前技能：`director-storyboard`（导演镜头拆解）、`character-three-view`（角色三视图）、`ui-ux-pro-max`（UI/UX 设计）、caveman 系列（沟通压缩）。
+- ⚠️ **模板双份同步**：`director-storyboard` 的模板同时存在于
+  `.agents/skills/director-storyboard/SKILL.md`（文档版）与
+  `backend/app/services/director_storyboard_skill.py` 的 `DIRECTOR_STORYBOARD_SKILL`（运行时真源）。
+  后者才是后端实际调用的 prompt（Dockerfile 只 `COPY backend/` 且 `.dockerignore` 排除 `*.md`，
+  容器里读不到 `.agents/`）。**改任一处必须同步另一处**，并同步 `.claude/skills/` 的镜像。
+- 解析器 `task_manager._parse_director_storyboard` 依赖模板里固定的结构（`镜头NN：标题（时长：N秒）`、
+  `M-N秒：` 分秒行、`摄影与视觉要求：`、`镜头：景别=…｜角度=…｜运镜=…｜情绪=…｜构图=…｜转场=…` 键值行），
+  改模板必须同步解析器，否则字段会退化为空。

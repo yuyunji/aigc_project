@@ -128,8 +128,8 @@ class TaskManager:
         )
         self._update_status(task_id, "running", progress=20)
 
-        # ── 阶段 2：AI 分镜师分镜拆解（单次 LLM 调用，镜数由 AI 判断）──
-        logger.info(f"[{task_id}] 阶段2: AI分镜师分镜拆解")
+        # ── 阶段 2：导演镜头拆解（单次 LLM 调用，模板见 director_storyboard_skill）──
+        logger.info(f"[{task_id}] 阶段2: 导演镜头拆解")
         self._update_status(task_id, "running", progress=25)
 
         # 阶段超时 = 单次 LLM 超时 × (1 + 重试次数) + 缓冲，保证内部重试有机会跑完
@@ -148,13 +148,6 @@ class TaskManager:
             f"{storyboard_text[:200].replace(chr(10), '↵')}..."
         )
 
-        # 提取 TOTAL_SHOTS
-        declared_total = self._extract_total_shots(storyboard_text)
-        if declared_total:
-            logger.info(f"[{task_id}] LLM 声明总镜数: {declared_total}")
-        else:
-            logger.warning(f"[{task_id}] 未提取到 TOTAL_SHOTS 声明")
-
         # 提取 GLOBAL_PREFIX
         global_prefix = self._extract_global_prefix(storyboard_text)
         if global_prefix:
@@ -171,23 +164,19 @@ class TaskManager:
         else:
             logger.warning(f"[{task_id}] 未提取到后置约束")
 
-        # 解析分镜
-        scene_list = self._parse_template_storyboard(storyboard_text)
+        # 解析导演镜头脚本（失败则回退旧一行式模板解析）
+        scene_list = self._parse_director_storyboard(storyboard_text)
         if not scene_list:
-            raise LLMAPIError("分镜提示词解析失败")
+            logger.warning(f"[{task_id}] 导演模板解析无结果，回退旧模板解析")
+            scene_list = self._parse_template_storyboard(storyboard_text)
+        if not scene_list:
+            raise LLMAPIError("导演镜头脚本解析失败，请重试")
 
-        logger.info(f"[{task_id}] 分镜解析完成: {len(scene_list)} 个镜头")
+        logger.info(f"[{task_id}] 导演镜头脚本解析完成: {len(scene_list)} 个镜头")
 
         # 分镜后处理校验：景别交替 / 情绪两字 / 转场白名单 / 情绪断崖检测
         scene_list = polish_storyboards(scene_list)
         logger.info(f"[{task_id}] 分镜后处理校验完成: {len(scene_list)} 个镜头")
-
-        # TOTAL_SHOTS 与实际解析数一致性检查
-        if declared_total and declared_total != len(scene_list):
-            logger.warning(
-                f"[{task_id}] ⚠️ LLM 声明 {declared_total} 镜，实际解析 {len(scene_list)} 镜，"
-                "不一致！可能 LLM 输出格式有误"
-            )
 
         # 合理性检查
         if len(scene_list) < 8:
@@ -236,20 +225,12 @@ class TaskManager:
         return str(exc)
 
     # ------------------------------------------------------------------
-    # TOTAL_SHOTS / 全局前缀 / 后置约束 管理
+    # 全局前缀 / 后置约束 管理
     # ------------------------------------------------------------------
 
     @staticmethod
-    def _extract_total_shots(raw_text: str) -> int | None:
-        """从 LLM 输出中提取 TOTAL_SHOTS 声明值"""
-        match = re.search(r"TOTAL_SHOTS[：:]\s*(\d+)", raw_text)
-        if match:
-            return int(match.group(1))
-        return None
-
-    @staticmethod
     def _extract_global_prefix(raw_text: str) -> str:
-        """从 LLM 输出中提取 GLOBAL_PREFIX 行"""
+        """从 LLM 输出中提取 GLOBAL_PREFIX 行（导演模板片头定调段首行）"""
         match = re.search(r"GLOBAL_PREFIX[：:]\s*(.+)", raw_text)
         if match:
             return match.group(1).strip()
@@ -437,6 +418,236 @@ class TaskManager:
             logger.warning("字段名解析无匹配，尝试回退 JSON 解析")
             return TaskManager._parse_storyboards(raw_text)
 
+        return results
+
+    # ------------------------------------------------------------------
+    # 导演镜头脚本解析（director-storyboard skill 模板）
+    # ------------------------------------------------------------------
+
+    # 机器键值行：镜头：景别=特写｜角度=俯拍｜运镜=…｜情绪=…｜构图=…｜转场=…
+    # 同时兼容模型退化为中文冒号/逗号分隔的写法（景别：特写，角度：俯拍）
+    _KV_TO_FIELD = {
+        "景别": "shot_size",
+        "角度": "camera_angle",
+        "运镜": "camera_movement",
+        "情绪": "mood",
+        "构图": "composition",
+        "转场": "transition",
+    }
+    _KV_FIELD_RE = re.compile(r"(景别|角度|运镜|情绪|构图|转场)\s*[=＝：:]\s*([^｜|，,、;；]+)")
+
+    @staticmethod
+    def _split_kv_line(value: str) -> dict:
+        """
+        解析 `键=值｜键=值…` 形式的镜头参数行（兼容 `键：值，键：值`）。
+
+        只认「字段名 + 分隔符」锚定的值。刻意不做全串关键词模糊匹配——
+        散文里「放大特写」含「大特写」、「中近景」含「中景」，模糊匹配会静默猜错，
+        比留空更糟：留空时 storyboard_polish 会给出安全的确定性兜底。
+        """
+        out: dict[str, str] = {}
+        for key, val in TaskManager._KV_FIELD_RE.findall(value or ""):
+            field = TaskManager._KV_TO_FIELD.get(key)
+            v = val.strip().strip("*").strip()
+            if field and v:
+                out.setdefault(field, v)
+        return out
+
+    @staticmethod
+    def _parse_director_storyboard(raw_text: str) -> list[dict]:
+        """
+        解析「导演镜头脚本」模板输出（skill: director-storyboard）。
+
+        模板结构：
+            GLOBAL_PREFIX：…
+            {片头定调：作品信息卡 + 开场定调}
+            镜头01：{标题}（时长：10秒）
+                {氛围段}
+                0-3秒： {画面}          ← 可多行
+                {角色}： "{台词}"        ← 可多行，位于最后一行分秒画面之后
+                摄影与视觉要求：
+                    风格/画质/镜头(键值)/光影/动作/比例
+                【首镜头】/【衔接提示→本镜】/【结尾桥接→镜头NN】
+            …
+            导演阐述：…（片尾，不属于任何镜头）
+            POST_CONSTRAINT：…
+
+        返回与 _parse_template_storyboard 相同结构的 dict 列表，
+        以便下游 polish / _save_storyboards / 视频链路无需改动。
+        """
+        text = raw_text.replace("\r\n", "\n").replace("\r", "\n")
+        # 去掉模型可能包裹的 Markdown 代码围栏
+        text = re.sub(r"^\s*```[a-zA-Z]*\s*$", "", text, flags=re.M)
+        text = re.sub(r"^\s*```\s*$", "", text, flags=re.M)
+
+        # ── 切掉片尾（导演阐述 / POST_CONSTRAINT 之前的内容才是镜头块）──
+        tail_start = len(text)
+        for marker in (r"^[ \t#>*]*导演阐述", r"^[ \t#>*]*POST_CONSTRAINT\s*[：:]"):
+            m = re.search(marker, text, flags=re.M)
+            if m:
+                tail_start = min(tail_start, m.start())
+
+        # ── 定位每个镜头块的起始 ──
+        headers = list(
+            re.finditer(r"^[ \t#>*]*镜头\s*(\d+)\s*[：:]\s*(.*)$", text, flags=re.M)
+        )
+        if not headers:
+            logger.warning("导演模板：未找到任何「镜头NN：」标题")
+            return []
+
+        results: list[dict] = []
+        for i, h in enumerate(headers):
+            scene_num = int(h.group(1))
+            header_rest = h.group(2).strip().strip("*").strip()
+
+            block_end = headers[i + 1].start() if i + 1 < len(headers) else tail_start
+            block = text[h.end():block_end]
+
+            # ── 标题 + 时长 ──
+            scene_title = header_rest
+            duration = 10.0
+            dur_match = re.search(
+                r"^(.*?)\s*[（(]\s*时长\s*[：:]\s*(\d+(?:\.\d+)?)\s*秒?\s*[)）]", header_rest
+            )
+            if dur_match:
+                scene_title = dur_match.group(1).strip()
+                duration = float(dur_match.group(2))
+            else:
+                scene_title = re.sub(r"[（(]时长[：:].*$", "", header_rest).strip()
+            duration = max(1.0, min(duration, 120.0))
+
+            lines = [ln.rstrip() for ln in block.split("\n")]
+
+            # ── 拆出「摄影与视觉要求」块与末尾标注块 ──
+            photo_idx = None
+            for idx, ln in enumerate(lines):
+                if re.match(r"^\s*摄影与视觉要求", ln):
+                    photo_idx = idx
+                    break
+            if photo_idx is None:
+                pre_lines, photo_lines, note_lines = lines, [], []
+            else:
+                note_idx = len(lines)
+                for idx in range(photo_idx + 1, len(lines)):
+                    if lines[idx].lstrip().startswith("【"):
+                        note_idx = idx
+                        break
+                pre_lines = lines[:photo_idx]
+                photo_lines = lines[photo_idx + 1:note_idx]
+                note_lines = lines[note_idx:]
+
+            # ── 分秒画面行 / 氛围段 / 对白行 ──
+            beat_re = re.compile(r"^\s*(\d+)\s*[-–~—]\s*(\d+)\s*秒\s*[：:]\s*(.+)$")
+            beats: list[tuple[str, str]] = []   # (时间戳, 画面描述)
+            atmosphere_parts: list[str] = []
+            dialogue_lines: list[str] = []
+            seen_beat = False
+
+            for ln in pre_lines:
+                s = ln.strip().strip("*").strip()
+                if not s:
+                    continue
+                beat = beat_re.match(ln.strip())
+                if beat:
+                    seen_beat = True
+                    beats.append((f"{beat.group(1)}-{beat.group(2)}秒", beat.group(3).strip()))
+                elif seen_beat:
+                    dialogue_lines.append(s)
+                else:
+                    atmosphere_parts.append(s)
+
+            atmosphere = " ".join(atmosphere_parts).strip()
+
+            # ── 摄影与视觉要求 6 字段 ──
+            photo: dict[str, str] = {}
+            for ln in photo_lines:
+                s = ln.strip().strip("*").strip()
+                if not s:
+                    continue
+                m = re.match(r"^(风格|画质|镜头|光影|动作|比例)\s*[：:]\s*(.*)$", s)
+                if m:
+                    photo[m.group(1)] = m.group(2).strip()
+
+            kv = TaskManager._split_kv_line(photo.get("镜头", ""))
+
+            notes = [ln.strip() for ln in note_lines if ln.strip()]
+
+            # ── 组装字段 ──
+            beat_text = "\n".join(f"{ts}： {desc}" for ts, desc in beats)
+            subject = " ".join(desc for _, desc in beats).strip() or atmosphere
+            dialogue_text = "\n".join(dialogue_lines).strip() or "@无"
+
+            visual_bits = [b for b in (atmosphere, beat_text) if b]
+            photo_text = " ".join(
+                f"{k}：{photo[k]}" for k in ("风格", "镜头", "光影", "动作") if photo.get(k)
+            )
+            if photo_text:
+                visual_bits.append(photo_text)
+            visual_description = "\n".join(visual_bits).strip()
+
+            # image_prompt：供视频生成用的单段重组文本（片头风格由 global_prefix 单独注入）
+            def _trim(s: str) -> str:
+                return s.strip().rstrip("。，,.;；、 ")
+
+            prompt_bits = [atmosphere] if atmosphere else []
+            if beat_text:
+                prompt_bits.append(beat_text)
+            if photo.get("镜头"):
+                prompt_bits.append(f"镜头：{photo['镜头']}")
+            if photo.get("光影"):
+                prompt_bits.append(f"光影：{photo['光影']}")
+            if photo.get("动作"):
+                prompt_bits.append(f"动作：{photo['动作']}")
+            image_prompt = "，".join(_trim(b) for b in prompt_bits if _trim(b))[:4000]
+
+            # description：结果页渲染用的完整导演脚本块（Markdown）
+            # 段落之间空行，段落内部的列表项只用单换行，避免渲染成松散的 loose list
+            desc_parts = [f"### 镜头{scene_num:02d}：{scene_title}（时长：{int(duration)}秒）"]
+            if atmosphere:
+                desc_parts.append(atmosphere)
+            if beats:
+                desc_parts.append("\n".join(f"- `{ts}` {desc}" for ts, desc in beats))
+            if dialogue_lines:
+                desc_parts.append(
+                    "**对白**\n" + "\n".join(f"- {d}" for d in dialogue_lines)
+                )
+            if photo:
+                desc_parts.append(
+                    "**摄影与视觉要求**\n"
+                    + "\n".join(
+                        f"- {k}：{photo[k]}" for k in
+                        ("风格", "画质", "镜头", "光影", "动作", "比例") if photo.get(k)
+                    )
+                )
+            if notes:
+                desc_parts.append("\n".join(notes))
+            description = "\n\n".join(desc_parts)
+
+            results.append({
+                "scene_number": scene_num,
+                "scene_title": scene_title,
+                "shot_size": kv.get("shot_size", ""),
+                "camera_angle": kv.get("camera_angle", ""),
+                "camera_movement": kv.get("camera_movement", ""),
+                "subject": subject,
+                "environment": atmosphere or subject[:200],
+                "mood": kv.get("mood", ""),
+                "composition": kv.get("composition", ""),
+                "quality_notes": photo.get("画质", TaskManager.DEFAULT_QUALITY_NOTES),
+                "transition": kv.get("transition", ""),
+                "dialogue_text": dialogue_text,
+                "duration_seconds": duration,
+                "image_prompt": image_prompt,
+                "description": description,
+                "global_prefix": "",
+                "location": (atmosphere or "")[:80],
+                "visual_description": visual_description,
+            })
+
+        logger.info(
+            f"导演模板解析完成: {len(results)} 个镜头"
+            f"（分秒画面 {sum(1 for r in results if '秒：' in r['visual_description'])} 镜含节拍）"
+        )
         return results
 
     @staticmethod

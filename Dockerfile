@@ -39,7 +39,9 @@ RUN pip install --no-cache-dir -r requirements.txt -i https://mirrors.aliyun.com
 COPY backend/ .
 
 # 复制前端构建产物到后端静态目录
-COPY --from=frontend-build /frontend/dist ./static/
+# 注意：vite 的 build.outDir 是 ../backend/static，而构建阶段的 WORKDIR 是 /frontend，
+# 所以产物落在 /backend/static —— 这里的 /backend 与仓库里的 backend/ 无关，只是路径解析结果。
+COPY --from=frontend-build /backend/static ./static/
 
 # 创建数据 & 上传目录
 RUN mkdir -p uploads
