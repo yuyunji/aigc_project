@@ -34,6 +34,7 @@ def init_db():
     import app.models.character    # noqa: F401
     import app.models.storyboard   # noqa: F401
     import app.models.media        # noqa: F401
+    import app.models.media_archive  # noqa: F401
     import app.models.asset        # noqa: F401
 
     Base.metadata.create_all(bind=engine)

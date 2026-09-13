@@ -1,6 +1,6 @@
 """
 资产拆解接口
-POST   /api/tasks/{task_id}/assets/extract       — AI 自动提取
+POST   /api/tasks/{task_id}/assets/extract       — AI 提取 / 重新提取（输入为原著源文本）
 GET    /api/tasks/{task_id}/assets               — 获取资产列表
 POST   /api/tasks/{task_id}/assets               — 手动添加
 PUT    /api/tasks/{task_id}/assets/{asset_id}     — 编辑
@@ -18,8 +18,8 @@ from sqlalchemy.orm import Session
 from app.config import settings
 from app.database import get_db
 from app.models.task import Task
-from app.models.storyboard import Storyboard
 from app.models.asset import AssetItem
+from app.services.asset_extractor import extract_assets_from_source
 from app.services.events import event_bus
 from app.schemas.asset import (
     AssetCreateRequest, AssetUpdateRequest, AssetResponse,
@@ -38,72 +38,35 @@ def _get_task_or_404(task_id: str, db: Session) -> Task:
     return task
 
 
-# ── AI 自动提取 ──
+# ── AI 提取 / 重新提取 ──
 
 @router.post("/{task_id}/assets/extract", response_model=AssetExtractResponse)
 async def extract_assets(task_id: str, db: Session = Depends(get_db)):
-    """AI 自动从分镜脚本中提取角色/场景/道具"""
-    _get_task_or_404(task_id, db)
+    """
+    AI 从原著源文本（上传的小说文件 / 粘贴的文本）提取角色/场景/道具。
 
-    # 获取分镜脚本
-    storyboards = (
-        db.query(Storyboard)
-        .filter(Storyboard.task_id == task_id)
-        .order_by(Storyboard.scene_number.asc())
-        .all()
-    )
-    if not storyboards:
-        raise HTTPException(status_code=400, detail="该任务尚未生成分镜脚本，请先完成分镜生成")
+    只改写资产文本描述：名称匹配到的已有资产保留其已生成图片与图片状态；
+    新结果中不再出现、且尚未出图的资产才会被删除。
+    """
+    task = _get_task_or_404(task_id, db)
+    source_text = task.source_text or ""
+    if not source_text.strip():
+        raise HTTPException(status_code=400, detail="该任务没有原著源文本，无法提取资产")
 
-    # 拼接分镜文本（精简关键字段，减少 token 消耗加速响应）
-    sb_text = "\n".join([
-        f"镜头{s.scene_number}: 主体={s.subject or ''}, 环境={s.environment or ''}"
-        for s in storyboards
-    ])[:8000]
+    # 长耗时 LLM 调用期间不占用请求级数据库连接（写入由服务层自理）
+    db.close()
 
-    # 调用 LLM 提取（独立超时 600s）
-    from app.services.llm_service import llm_service
     try:
-        result = await asyncio.wait_for(
-            llm_service.generate_asset_breakdown(sb_text),
+        stats = await asyncio.wait_for(
+            extract_assets_from_source(task_id, source_text),
             timeout=1800,
         )
     except asyncio.TimeoutError:
         raise HTTPException(status_code=504, detail="AI 提取超时，请重试")
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"AI 提取失败: {str(e)[:200]}")
-
-    # 清除旧资产
-    db.query(AssetItem).filter(AssetItem.task_id == task_id).delete()
-
-    # 存入数据库
-    extracted = 0
-    chars, scenes, props = [], [], []
-
-    for cat_key, cat_label in [("characters", "character"), ("scenes", "scene"), ("props", "prop")]:
-        items = result.get(cat_key, [])
-        for item in items:
-            asset = AssetItem(
-                task_id=task_id,
-                category=cat_label,
-                name=item.get("name", "")[:200],
-                description=item.get("description", "")[:5000],
-                image_prompt=item.get("visual_prompt", "")[:2000],
-                spatial_layout=item.get("spatial_layout", "")[:2000] or None,
-                portrait_prompt=item.get("portrait_prompt", "")[:1000] or None,
-                image_status="pending",
-            )
-            db.add(asset)
-            extracted += 1
-            if cat_label == "character":
-                chars.append(item.get("name", ""))
-            elif cat_label == "scene":
-                scenes.append(item.get("name", ""))
-            else:
-                props.append(item.get("name", ""))
-
-    db.commit()
-    logger.info(f"[{task_id}] 资产提取完成: {extracted} 个资产")
+        # LLMAPIError 的文案在 .message 上（未走 Exception.args）
+        detail = str(getattr(e, "message", "") or e)[:200]
+        raise HTTPException(status_code=500, detail=f"AI 提取失败: {detail}")
 
     # 服装字段体检：找出缺规范「服装」字段的角色，提示补全
     wardrobe_warnings = []
@@ -119,10 +82,14 @@ async def extract_assets(task_id: str, db: Session = Depends(get_db)):
         logger.warning(f"[{task_id}] 服装字段体检失败（非致命）: {e}")
 
     return AssetExtractResponse(
-        extracted=extracted,
-        characters=chars,
-        scenes=scenes,
-        props=props,
+        extracted=stats["extracted"],
+        characters=stats["characters"],
+        scenes=stats["scenes"],
+        props=stats["props"],
+        added=stats["added"],
+        updated=stats["updated"],
+        kept=stats["kept"],
+        removed=stats["removed"],
         wardrobe_warnings=wardrobe_warnings,
     )
 

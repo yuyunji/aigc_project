@@ -23,11 +23,14 @@ logger = logging.getLogger(__name__)
 
 # ── 资产提取 Prompt ──
 
-ASSET_EXTRACTION_PROMPT = """从分镜脚本提取角色/场景/道具，返回JSON。
+ASSET_EXTRACTION_PROMPT = """从原著小说文本提取角色/场景/道具，返回JSON。
 
 {"characters":[{"name":"名","description":"外貌(50-150字)","visual_prompt":"English prompt <80 words","portrait_prompt":"English front-face portrait prompt <50 words"}],"scenes":[{"name":"名","description":"空间特征(50-150字)","visual_prompt":"English prompt <80 words","spatial_layout":"空间布局(50-150字，含机位/标志物方位/光源/景别基调)"}],"props":[{"name":"名","description":"外观(30-100字)","visual_prompt":"English prompt <50 words"}]}
 
 要求：
+- 只提取有实际戏份、需要跨镜头保持一致的角色（主角与重要配角），忽略只出现一次的路人、群众；
+- 场景同理：只提取反复出现的主要场景，忽略一笔带过的地点；
+- 道具只提取具有辨识度、会跨镜头复现的物件；
 - 每个角色的 description 必须包含明确的「服装」字段（格式如 **服装**：xxx），且服装必须写清「颜色 + 款式 + 材质 + 标志性细节」，这是全片每个镜头服装一致性的唯一真源，务必具体（如「黑色金边劲装，立领，腰束革带，袖口银纹」），不要笼统。
 - 每个角色的 portrait_prompt 必须干净背景、正面半身定妆、五官/发型/服装细节明确，且服装措辞与 description 里的「服装」字段保持一致，用于后续角色定妆图「逐字锁定」外观。
 - 每个场景的 spatial_layout 必须写明主结构方位、标志物相对位置、光源方向、机位景别基调，用于跨镜头场景一致性。
@@ -97,8 +100,10 @@ def _map_openai_error(error_str: str) -> str | None:
         return (
             "API Key 无效或已过期。请检查：\n"
             "1. .env 中 DOUBAO_API_KEY 是否正确\n"
-            "2. API Key 是否已在火山引擎控制台重新生成\n"
-            "3. API Key 是否有对该模型的访问权限"
+            "2. DOUBAO_BASE_URL 是否与 Key 类型匹配（三者互不通用）："
+            "订阅套餐 /api/plan/v3、标准按量付费 /api/v3、Coding Plan /api/coding/v3\n"
+            "3. API Key 是否已在火山引擎控制台重新生成、订阅是否仍在有效期\n"
+            "4. API Key 是否有对该模型的访问权限"
         )
 
     # ── 请求频率限制 ──
@@ -384,22 +389,26 @@ class LLMService:
         )
 
 
-    async def generate_asset_breakdown(self, storyboards_text: str) -> dict:
+    async def generate_asset_breakdown(self, source_text: str) -> dict:
         """
-        AI 资产提取：从分镜脚本中提取角色/场景/道具。
+        AI 资产提取：从原著源文本（截取片段）中提取角色/场景/道具。
 
         Args:
-            storyboards_text: 拼接后的分镜脚本文本
+            source_text: 原著源文本片段（由 asset_extractor.build_source_excerpt 截取）
 
         Returns:
             {"characters": [...], "scenes": [...], "props": [...]}
+
+        Raises:
+            LLMAPIError: 结果不是合法 JSON（宁可报错重试，也不要静默返回空资产）
         """
-        user_message = f"提取角色/场景/道具：\n\n{storyboards_text[:8000]}"
+        user_message = f"以下是小说原文，请提取角色/场景/道具：\n\n{source_text}"
 
         result = await self._call_llm(
             ASSET_EXTRACTION_PROMPT,
             user_message,
-            max_tokens=4096,
+            # 输入是整段原著，资产数远多于旧的分镜清单，输出预算相应放宽
+            max_tokens=8192,
             temperature=0.3,
         )
         text = result.strip()
@@ -407,10 +416,15 @@ class LLMService:
             text = re.sub(r"^```(?:json)?\s*", "", text)
             text = re.sub(r"\s*```$", "", text)
         try:
-            return json.loads(text)
+            data = json.loads(text)
         except json.JSONDecodeError:
             logger.warning(f"资产提取 JSON 解析失败: {text[:200]}")
-            return {"characters": [], "scenes": [], "props": []}
+            raise LLMAPIError("资产提取结果解析失败，请重试")
+
+        if not isinstance(data, dict):
+            logger.warning(f"资产提取结果类型异常: {type(data).__name__}")
+            raise LLMAPIError("资产提取结果格式异常，请重试")
+        return data
 
 
 # 全局单例

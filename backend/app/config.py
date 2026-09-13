@@ -20,7 +20,7 @@ class Settings(BaseSettings):
     llm_max_retries: int = 1          # 重试 1 次（共 2 次调用），动态镜数输出长，减少无效重试
     llm_retry_base_delay: float = 2.0
     llm_call_timeout: int = 600       # 单次 LLM 调用超时 10 分钟，动态镜数输出更长需要更多时间
-    task_total_timeout: int = 1800    # 任务总超时 30 分钟
+    task_total_timeout: int = 3000    # 任务总超时 50 分钟（兜住资产拆解 + 镜头拆解两个 LLM 阶段）
 
     # 服务
     host: str = "127.0.0.1"

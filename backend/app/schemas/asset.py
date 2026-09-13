@@ -47,10 +47,14 @@ class AssetListResponse(BaseModel):
 
 class AssetExtractResponse(BaseModel):
     """AI 提取结果"""
-    extracted: int
+    extracted: int = Field(description="本次提取命中的资产数（新增 + 更新）")
     characters: list[str]
     scenes: list[str]
     props: list[str]
+    added: int = Field(default=0, description="新增资产数")
+    updated: int = Field(default=0, description="匹配到已有资产并覆盖其文本的资产数（图片保留）")
+    kept: int = Field(default=0, description="新结果未覆盖、但因已出图而保留的资产数")
+    removed: int = Field(default=0, description="新结果未覆盖且未出图而被删除的资产数")
     wardrobe_warnings: list[str] = Field(
         default_factory=list,
         description="缺规范「服装」字段的角色清单，用于提示用户补全以保证跨镜头服装一致",

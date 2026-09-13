@@ -84,7 +84,7 @@
 <script setup>
 import { ref, computed, onMounted, onUnmounted } from "vue";
 import { useRoute, useRouter } from "vue-router";
-import { ElMessage } from "element-plus";
+import { ElMessage, ElMessageBox } from "element-plus";
 import { getTaskList, getStoryboards } from "../api/task";
 import { getVideos, generateSceneVideo, retryScene } from "../api/media";
 import { extractAssets, getAssets, createAsset, updateAsset, deleteAsset, generateAssetImage, uploadAssetImage } from "../api/asset";
@@ -108,13 +108,14 @@ const assets = ref([]);
 const assetsLoading = ref(false);
 const extracting = ref(false);
 
-// Pipeline 进度计算
+// Pipeline 进度计算（进度阈值与 task_manager 阶段划分一致）
 const pipelineStages = computed(() => {
   const p = completedTasks.value.find(t => t.id === selectedTaskId.value);
   if (!p) return [];
   return [
     { label: "分片预处理", done: p.progress >= 20, active: p.progress >= 10 && p.progress < 20 },
-    { label: "导演镜头拆解", done: p.progress >= 78, active: p.progress >= 25 && p.progress < 78 },
+    { label: "资产拆解", done: p.progress >= 35, active: p.progress >= 25 && p.progress < 35 },
+    { label: "导演镜头拆解", done: p.progress >= 78, active: p.progress >= 40 && p.progress < 78 },
   ];
 });
 
@@ -239,10 +240,26 @@ async function loadAssets(taskId) {
 }
 
 async function onExtractAssets() {
+  // 已有资产 = 重新提取：只重写文本描述，已生成的图片保留
+  if (assets.value.length) {
+    try {
+      await ElMessageBox.confirm(
+        "将按原著源文本重新提取资产名称与描述，已生成的资产图、定妆图不受影响；" +
+        "新结果中不再出现、且尚未出图的资产会被删除。确定继续吗？",
+        "确认重新提取",
+        { confirmButtonText: "重新提取", cancelButtonText: "取消", type: "warning" }
+      );
+    } catch (e) {
+      return; // 用户取消
+    }
+  }
   extracting.value = true;
   try {
     const r = await extractAssets(selectedTaskId.value);
-    ElMessage.success(`AI 提取完成：${r.data.extracted} 个资产`);
+    const d = r.data;
+    let msg = `AI 提取完成：${d.extracted} 个资产（新增 ${d.added} · 更新 ${d.updated}）`;
+    if (d.kept) msg += `，保留已出图资产 ${d.kept} 个`;
+    ElMessage.success(msg);
     await loadAssets(selectedTaskId.value);
   } catch (e) { /* global handler */ }
   finally { extracting.value = false; }

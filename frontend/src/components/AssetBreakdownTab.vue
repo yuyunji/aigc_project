@@ -4,16 +4,22 @@
 <template>
   <div class="asset-tab" v-loading="loading">
     <!-- 顶部操作栏 -->
-    <div class="asset-toolbar">
-      <el-button type="primary" :loading="extracting" @click="$emit('extract')">
-        🤖 AI 自动提取
-      </el-button>
-      <el-button plain @click="openAdd()">
-        ➕ 手动添加
-      </el-button>
-      <span class="toolbar-hint" v-if="assets.length">
-        共 {{ assets.length }} 个资产（角色 {{ characterCount }} · 场景 {{ sceneCount }} · 道具 {{ propCount }}）
-      </span>
+    <div class="asset-toolbar-wrap">
+      <div class="asset-toolbar">
+        <el-button type="primary" :loading="extracting" @click="$emit('extract')">
+          {{ assets.length ? "🤖 AI 重新提取" : "🤖 AI 自动提取" }}
+        </el-button>
+        <el-button plain @click="openAdd()">
+          ➕ 手动添加
+        </el-button>
+        <span class="toolbar-hint" v-if="assets.length">
+          共 {{ assets.length }} 个资产（角色 {{ characterCount }} · 场景 {{ sceneCount }} · 道具 {{ propCount }}）
+        </span>
+      </div>
+      <p class="toolbar-tip" v-if="assets.length">
+        资产拆解在提交任务时已自动完成；「AI 重新提取」按原著源文本重写名称与描述，
+        已生成的资产图、定妆图不受影响。
+      </p>
     </div>
 
     <el-empty v-if="!loading && assets.length === 0" description="暂无资产，请点击「AI 自动提取」或「手动添加」" />
@@ -131,8 +137,10 @@ function submitForm() {
 </script>
 
 <style lang="scss" scoped>
-.asset-toolbar { display: flex; align-items: center; gap: 10px; margin-bottom: var(--space-lg); }
+.asset-toolbar-wrap { margin-bottom: var(--space-lg); }
+.asset-toolbar { display: flex; align-items: center; gap: 10px; }
 .toolbar-hint { font-size: 13px; color: var(--color-text-tertiary); margin-left: 8px; }
+.toolbar-tip { font-size: 12px; color: var(--color-text-tertiary); margin: 6px 0 0; line-height: 1.6; }
 .asset-columns { display: grid; grid-template-columns: repeat(3, 1fr); gap: var(--space-md); }
 .column-header {
   font-size: 15px; font-weight: 700; color: var(--color-text-primary);

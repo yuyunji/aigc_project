@@ -68,6 +68,11 @@
               <span>文本分片预处理</span>
             </div>
             <div class="pipeline-arrow">↓</div>
+            <div class="pipeline-step">
+              <span class="step-dot"></span>
+              <span>资产拆解（角色 / 场景 / 道具）</span>
+            </div>
+            <div class="pipeline-arrow">↓</div>
             <div class="pipeline-step highlight-step">
               <span class="step-dot highlight-dot"></span>
               <span>导演镜头拆解</span>
