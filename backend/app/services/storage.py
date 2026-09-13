@@ -44,12 +44,19 @@ class StorageService:
                 )
         return self._bucket if self._bucket is not False else None
 
-    def upload(self, local_path: str) -> str | None:
-        """上传本地文件，返回 object key；未配置/文件不存在返回 None"""
+    def upload(self, local_path: str, key: str | None = None) -> str | None:
+        """
+        上传本地文件，返回 object key；未配置/文件不存在返回 None。
+
+        默认 key = 相对 media_dir 的路径；传入 key 则用调用方指定的（归档补传需要
+        轮次前缀，避免覆盖上一轮的同名对象）。
+        """
         bucket = self._ensure_bucket()
         if not bucket or not local_path or not os.path.isfile(local_path):
             return None
-        key = os.path.relpath(local_path, settings.media_dir).replace("\\", "/")
+        if not key:
+            key = os.path.relpath(local_path, settings.media_dir).replace("\\", "/")
+        key = key.replace("\\", "/")
         ext = os.path.splitext(local_path)[1].lower()
         headers = {
             "Content-Type": _CONTENT_TYPES.get(ext, "application/octet-stream")

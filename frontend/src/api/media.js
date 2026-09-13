@@ -23,6 +23,11 @@ export function getComposite(taskId) {
   return apiClient.get(`/api/media/${taskId}/composite`);
 }
 
+/** 历史轮次归档（重新生成保留的上一轮视频 / 配音 / 成片） */
+export function getMediaArchive(taskId) {
+  return apiClient.get(`/api/media/${taskId}/archive`);
+}
+
 /** 为单个分镜生成视频 */
 export function generateSceneVideo(taskId, sceneNumber, provider) {
   const params = provider ? { provider } : {};

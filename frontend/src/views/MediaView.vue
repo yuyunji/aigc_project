@@ -85,6 +85,67 @@
         </div>
       </el-card>
 
+      <!-- 历史版本（「重新生成」时归档的上一轮产物） -->
+      <el-card v-if="archiveRounds.length" shadow="never" class="section-card">
+        <template #header>
+          <span class="section-title">🗂 历史版本</span>
+          <el-tag size="small" effect="plain" style="margin-left:8px">
+            {{ archiveRounds.length }} 轮
+          </el-tag>
+          <span class="archive-hint">重新生成后保留的上一轮视频与配音</span>
+        </template>
+        <el-collapse accordion>
+          <el-collapse-item
+            v-for="r in archiveRounds"
+            :key="r.round_no"
+            :name="r.round_no"
+          >
+            <template #title>
+              <span class="archive-round-title">
+                第 {{ r.round_no }} 轮 · {{ formatTime(r.archived_at) }} · {{ r.item_count }} 个文件
+                <el-tag
+                  v-if="hasPending(r)"
+                  size="small" type="warning" effect="plain" style="margin-left:8px"
+                >云端备份中</el-tag>
+                <el-tag
+                  v-if="hasRescueFailed(r)"
+                  size="small" type="info" effect="plain" style="margin-left:8px"
+                >云端备份失败（本地可播放）</el-tag>
+              </span>
+            </template>
+            <div class="video-grid">
+              <template v-for="it in r.items">
+                <div v-if="!getMediaUrl(it)" :key="it.id" class="archive-audio">
+                  <span class="archive-audio-label">
+                    {{ it.asset_type === "composite" ? "🎬 完整成片" : `🎞 分镜 ${it.scene_number}` }}
+                    · 第 {{ r.round_no }} 轮
+                  </span>
+                  <span class="archive-missing">文件已不可用（本地副本与云端备份均缺失）</span>
+                </div>
+                <VideoPlayer
+                  v-else-if="it.asset_type === 'video'"
+                  :key="it.id"
+                  :src="getMediaUrl(it)"
+                  :title="`分镜 ${it.scene_number} · 第 ${r.round_no} 轮`"
+                  :loading="false"
+                />
+                <VideoPlayer
+                  v-else-if="it.asset_type === 'composite'"
+                  :key="it.id"
+                  :src="getMediaUrl(it)"
+                  :title="`完整成片 · 第 ${r.round_no} 轮`"
+                  :loading="false"
+                />
+                <div v-else :key="it.id" class="archive-audio">
+                  <span class="archive-audio-label">🔊 {{ it.character_name || "配音" }}</span>
+                  <audio :src="getMediaUrl(it)" controls />
+                </div>
+              </template>
+            </div>
+          </el-collapse-item>
+        </el-collapse>
+      </el-card>
+
     </div>
   </div>
 </template>
@@ -97,7 +158,7 @@ import { Loading } from "@element-plus/icons-vue";
 import VideoPlayer from "../components/VideoPlayer.vue";
 import MediaPipeline from "../components/MediaPipeline.vue";
 import { getTaskList } from "../api/task";
-import { getPipelineProgress, getVideos, getComposite } from "../api/media";
+import { getPipelineProgress, getVideos, getComposite, getMediaArchive } from "../api/media";
 import apiClient from "../api/index";
 import { getMediaUrl } from "../utils/media";
 import { subscribeTaskEvents } from "../utils/stream";
@@ -116,6 +177,26 @@ const videosLoading = ref(false);
 const composite = ref(null);
 const compositeLoading = ref(false);
 const compositing = ref(false);
+const archiveRounds = ref([]);
+const archiveLoading = ref(false);
+
+/** 归档轮次里是否还有待补传 OSS 的文件 */
+function hasPending(round) {
+  return round.items.some((it) => it.rescue_status === "pending");
+}
+
+/** 归档轮次里是否有云端补传失败的文件（本地副本仍在，页面回退 /media 播放） */
+function hasRescueFailed(round) {
+  return round.items.some((it) => it.rescue_status === "failed");
+}
+
+function formatTime(iso) {
+  if (!iso) return "-";
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return "-";
+  const pad = (n) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
 
 // Provider 选择（从 localStorage 恢复）
 const videoProvider = ref(localStorage.getItem("aigc_video_provider") || "minimax-h3");
@@ -163,6 +244,7 @@ async function loadAll(taskId) {
     (async () => { pipelineLoading.value = true; try { const r = await getPipelineProgress(taskId); pipeline.value = r.data; } catch(e){} finally { pipelineLoading.value = false; } })(),
     (async () => { videosLoading.value = true; try { const r = await getVideos(taskId); videos.value = r.data.assets || []; } catch(e){} finally { videosLoading.value = false; } })(),
     (async () => { compositeLoading.value = true; try { const r = await getComposite(taskId); composite.value = r.data; } catch(e){} finally { compositeLoading.value = false; } })(),
+    (async () => { archiveLoading.value = true; try { const r = await getMediaArchive(taskId); archiveRounds.value = r.data.rounds || []; } catch(e){} finally { archiveLoading.value = false; } })(),
   ]);
 }
 
@@ -225,6 +307,31 @@ onUnmounted(() => {
   grid-template-columns: repeat(auto-fill, minmax(360px, 1fr));
   gap: var(--space-md);
 }
+
+.archive-hint {
+  margin-left: 8px;
+  font-size: 12px;
+  color: var(--color-text-secondary);
+}
+
+.archive-round-title {
+  display: inline-flex;
+  align-items: center;
+  font-weight: 600;
+  font-size: 13px;
+}
+
+.archive-audio {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: var(--space-md);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md, 8px);
+}
+
+.archive-audio-label { font-size: 13px; font-weight: 600; }
+.archive-missing { font-size: 12px; color: var(--color-text-secondary); }
 
 
 </style>

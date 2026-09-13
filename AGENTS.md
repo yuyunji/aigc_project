@@ -4,8 +4,11 @@
 
 ## 项目是什么
 
-一条 AI 级联生成链路：`原著文本 → 文本分片预处理 → 导演镜头拆解 → 资产拆解 → 按镜视频生成`。
+一条 AI 级联生成链路：`原著文本 → 文本分片预处理 → 资产拆解 → 导演镜头拆解 → 按镜视频生成`。
 支持文本粘贴与 `.txt` 上传，异步任务处理，前端轮询与 SSE 展示进度与结果。
+
+资产拆解早于镜头拆解，输入是原著源文本（`tasks.source_text`），与服务层
+`backend/app/services/asset_extractor.py` 共用；任务已有资产时该阶段直接跳过。
 
 分镜阶段按 **导演镜头脚本模板** 输出（片头定调段 + 逐镜块 + 导演阐述），
 模板真源见 `backend/app/services/director_storyboard_skill.py` 与 skill `director-storyboard`。
@@ -60,7 +63,14 @@ ANTHROPIC_API_KEY=sk-ant-xxxx docker compose up -d
 
 ## 需要遵守的约定
 
-- 级联链路顺序固定：文本分片 → 导演镜头拆解（单次 LLM 调用），各有独立超时（单次 600s、阶段按重试次数推算、总 1800s），不要改动顺序。
+- 级联链路顺序固定：文本分片 → 资产拆解 → 导演镜头拆解（各一次 LLM 调用），
+  各有独立超时（单次 600s、阶段按重试次数推算、总 1800s），不要改动顺序。
+  **资产拆解两处口径必须一致**：链路（`task_manager._run_pipeline`）与手动接口
+  （`POST /tasks/{id}/assets/extract`）都走 `asset_extractor.extract_assets_from_source`。
+- 重新生成（`POST /tasks/{id}/regenerate`）**不删资产**：AssetItem 与 `media/{task_id}/{assets,characters}`
+  下的图片保留，链路检测到已有资产即跳过资产拆解；重做资产只能靠前端的「AI 重新提取」按钮。
+  「AI 重新提取」只覆盖文本字段，`image_path/url/oss_key/portrait_*/image_status` 一律不动，
+  新结果未覆盖且未出图的旧资产才删除（见 `asset_extractor._merge_assets`）。
 - 输入上限 200000 字符，分片 8000 字符，送入 LLM 最多 3 片；这些常量在 `backend/app/config.py`。
 - 错误统一映射为中文可读消息（`backend/app/utils/exceptions.py`）。
 - 前端 3s 轮询。不要引入超出 Demo 边界的能力（登录/鉴权、支付、Redis/K8s、多媒体生成等）。

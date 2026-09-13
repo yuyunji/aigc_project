@@ -53,6 +53,42 @@ class MediaAssetListResponse(BaseModel):
     assets: list[MediaAssetResponse]
 
 
+# ── 历史轮次归档 ──
+
+class MediaArchiveItemResponse(BaseModel):
+    id: str
+    asset_type: str
+    storyboard_id: str | None = None
+    scene_number: int | None = None
+    character_name: str | None = None
+    prompt: str | None = None
+    file_path: str | None = None
+    url: str | None = None
+    status: str
+    error_message: str | None = None
+    duration: float | None = None
+    rescue_status: str = "none"
+    created_at: datetime | None = None
+
+    class Config:
+        from_attributes = True
+
+
+class MediaArchiveRoundResponse(BaseModel):
+    """一轮归档产物"""
+    round_no: int
+    archived_at: datetime | None = None
+    item_count: int
+    items: list[MediaArchiveItemResponse]
+
+
+class MediaArchiveListResponse(BaseModel):
+    """任务的历史轮次列表（新轮次在前）"""
+    task_id: str
+    total_rounds: int
+    rounds: list[MediaArchiveRoundResponse]
+
+
 class PipelineProgressResponse(BaseModel):
     """全流程进度"""
     task_id: str

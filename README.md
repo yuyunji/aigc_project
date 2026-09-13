@@ -9,7 +9,7 @@
 本项目实现一条完整的 **AI 级联生成链路**：
 
 ```
-原著文本 → 文本分片预处理 → 导演镜头拆解 → 资产拆解 → 按镜视频生成
+原著文本 → 文本分片预处理 → 资产拆解 → 导演镜头拆解 → 按镜视频生成
 ```
 
 分镜阶段输出**导演镜头脚本**：片头定调段 + 逐镜块（标题/时长 · 氛围 · 分秒画面 · 对白 ·
@@ -24,7 +24,9 @@
 |------|------|
 | 📝 文本输入 | 文本框粘贴 + .txt 文件上传 |
 | 🔪 文本预处理 | 段落感知分片、token 估算、超大文本自动截断 |
+| 🎒 资产拆解 | 提交任务时自动从原著源文本提取角色 / 场景 / 道具；已有资产则跳过 |
 | 🤖 LLM 拆解链路 | 导演镜头拆解（单次调用，导演镜头脚本模板） |
+| 🔁 AI 重新提取 | 按原著源文本重写资产名称与描述，已生成的资产图 / 定妆图不受影响 |
 | ⚡ 异步任务 | asyncio.Queue 内存队列、进度实时更新、前端 3s 轮询 |
 | 📊 统计看板 | 任务总数 / 状态分布 / CSS 柱状图 |
 | 🛡️ 边界保护 | 输入校验、API 重试、阶段超时、友好错误提示 |
@@ -75,7 +77,7 @@ graph TD
     subgraph 前端["🖥️ Frontend (Vue3 + Element Plus)"]
         A[上传页面<br/>文本输入 + 文件上传]
         B[任务管理页<br/>状态列表 + 进度轮询]
-        C[结果预览页<br/>大纲/人物/分镜]
+        C[结果预览页<br/>资产拆解/分镜/视频]
         D[统计看板<br/>任务数量可视化]
     end
 
@@ -89,7 +91,7 @@ graph TD
     subgraph 服务层["🔧 Services"]
         I[TextProcessor<br/>文本分片 + Token估算<br/>📌 流程模拟标记]
         J[InMemoryTaskQueue<br/>asyncio.Queue<br/>内存任务队列]
-        K[TaskManager<br/>级联编排 + 超时保护<br/>大纲→人物→分镜]
+        K[TaskManager<br/>级联编排 + 超时保护<br/>分片→资产→分镜]
         L[LLMService<br/>Claude API 封装<br/>重试 + 超时 + Token检查]
     end
 
@@ -98,6 +100,7 @@ graph TD
         N[(Outlines)]
         O[(Characters)]
         P[(Storyboards)]
+        R[(AssetItems)]
     end
 
     subgraph 外部["☁️ External"]
@@ -110,13 +113,11 @@ graph TD
     F -->|"入队"| J
     J -->|"消费任务"| K
     K -->|"1. 校验+分片"| I
-    K -->|"2. 生成大纲"| L
+    K -->|"2. 资产拆解（原著源文本，已有资产则跳过）"| L
     L -->|"API Call (重试/超时)"| Q
-    Q -->|"大纲结果"| L
-    L -->|"写入"| N
-    K -->|"3. 生成人物"| L
-    L -->|"写入"| O
-    K -->|"4. 生成分镜"| L
+    Q -->|"角色/场景/道具"| L
+    L -->|"写入"| R
+    K -->|"3. 导演镜头拆解（单次调用）"| L
     L -->|"写入"| P
     K -->|"更新状态"| M
     B -->|"轮询状态"| G
@@ -147,28 +148,25 @@ sequenceDiagram
     API-->>FE: 返回 task_id
     FE->>FE: 跳转任务管理页
 
-    Q->>TM: 消费任务 (总超时: 600s)
+    Q->>TM: 消费任务 (总超时: 1800s)
     TM->>DB: 更新状态 (running, progress=5%)
 
     Note over TM: 阶段0: 输入校验
 
-    Note over TM,LLM: 📌 阶段1: 文本分片 + Token估算
+    Note over TM: 📌 阶段1: 文本分片 + Token估算
     TM->>TM: 校验 → 分片 → 截断
 
-    Note over TM,LLM: 📌 阶段2: 生成大纲 (超时 130s)
-    TM->>LLM: 发送分片文本 (最多3片)
+    Note over TM,LLM: 📌 阶段2: 资产拆解 (超时 1260s)
+    TM->>DB: 查已有资产 (有则整段跳过)
+    TM->>LLM: 原著源文本 (最多3片)
+    LLM-->>TM: 角色/场景/道具 JSON (或重试+退避)
+    TM->>DB: 合并写入 asset_items 表 (已生成图片不动)
+
+    Note over TM,LLM: 📌 阶段3: 导演镜头拆解 (超时 1260s, 单次调用)
+    TM->>LLM: 分片文本 (最多3片)
     LLM->>LLM: Token预算检查
-    LLM-->>TM: 返回大纲 (或重试+退避)
-    TM->>DB: 写入 outlines 表
-
-    Note over TM,LLM: 📌 阶段3: 生成人物 (超时 130s)
-    TM->>LLM: 大纲 + 原文(智能截断)
-    LLM-->>TM: 返回角色列表
-    TM->>DB: 写入 characters 表
-
-    Note over TM,LLM: 📌 阶段4: 生成分镜 (超时 130s)
-    TM->>LLM: 大纲 + 人物(智能截断)
-    LLM-->>TM: 返回分镜列表
+    LLM-->>TM: 导演镜头脚本
+    TM->>DB: 解析后写入 storyboards 表
     TM->>DB: 进度 100%, status=success
 
     loop 轮询 (3s)
@@ -404,7 +402,7 @@ aigc_project/
 | `LLM_MAX_RETRIES` | `2` | API 失败重试次数 |
 | `LLM_RETRY_BASE_DELAY` | `2.0` | 重试退避基数（秒） |
 | `LLM_CALL_TIMEOUT` | `120` | 单次 API 超时（秒） |
-| `TASK_TOTAL_TIMEOUT` | `600` | 任务总超时（秒） |
+| `TASK_TOTAL_TIMEOUT` | `3000` | 任务总超时（秒），需覆盖资产拆解 + 导演镜头拆解两个 LLM 阶段 |
 | `MAX_CHUNK_SIZE` | `8000` | 分片大小（字符） |
 | `MAX_INPUT_CHARS` | `200000` | 最大输入字符数 |
 | `MAX_CHUNKS_FOR_LLM` | `3` | 送入 LLM 的最大分片数 |

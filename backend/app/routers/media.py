@@ -4,6 +4,7 @@ GET  /api/media/{task_id}/pipeline    — 全流程进度
 GET  /api/media/{task_id}/videos      — 视频片段列表
 GET  /api/media/{task_id}/audio       — 配音列表
 GET  /api/media/{task_id}/composite   — 合成视频
+GET  /api/media/{task_id}/archive     — 历史轮次归档（重新生成保留的上一轮产物）
 """
 import asyncio
 import logging
@@ -15,9 +16,13 @@ from app.database import SessionLocal, get_db
 from app.models.task import Task
 from app.models.storyboard import Storyboard
 from app.models.media import MediaAsset
+from app.models.media_archive import MediaArchive
 from app.schemas.media import (
     MediaAssetResponse,
     MediaAssetListResponse,
+    MediaArchiveItemResponse,
+    MediaArchiveRoundResponse,
+    MediaArchiveListResponse,
     PipelineProgressResponse,
 )
 from app.services.task_manager import task_manager
@@ -173,11 +178,13 @@ async def _run_composite(task_id: str):
             output = await video_composer.composite_with_transitions(
                 task_id, video_paths, transitions
             )
-            # 上传合成视频到 OSS（失败降级为本地 /media）
+            # 上传合成视频到 OSS（失败降级为本地 /media）；key 带轮次前缀，不覆盖归档轮
             oss_key = None
             try:
                 from app.services.storage import storage
-                oss_key = await asyncio.to_thread(storage.upload, output)
+                from app.services.media_archive import current_round, round_oss_key
+                key = round_oss_key(output, task_id, current_round(task_id))
+                oss_key = await asyncio.to_thread(storage.upload, output, key)
             except Exception as e:
                 logger.warning(f"[{task_id}] OSS 上传失败（忽略）: {e}")
             # 保存合成记录
@@ -290,6 +297,45 @@ def get_audio(task_id: str, db: Session = Depends(get_db)):
     return MediaAssetListResponse(
         total=len(assets),
         assets=[MediaAssetResponse.model_validate(a) for a in assets],
+    )
+
+
+@router.get("/{task_id}/archive", response_model=MediaArchiveListResponse)
+def get_archive(task_id: str, db: Session = Depends(get_db)):
+    """
+    历史轮次归档 —— 「重新生成」时被替换掉的视频 / 配音 / 合成成片。
+
+    按轮次分组（新轮次在前），本地无副本的条目由后台补传 OSS
+    （rescue_status: pending / done / failed）。
+    """
+    _get_task_or_404(task_id, db)
+    rows = (
+        db.query(MediaArchive)
+        .filter(MediaArchive.task_id == task_id)
+        .order_by(
+            MediaArchive.round_no.desc(),
+            MediaArchive.asset_type.asc(),
+            MediaArchive.scene_number.asc(),
+        )
+        .all()
+    )
+
+    rounds: list[MediaArchiveRoundResponse] = []
+    for row in rows:
+        if not rounds or rounds[-1].round_no != row.round_no:
+            rounds.append(
+                MediaArchiveRoundResponse(
+                    round_no=row.round_no,
+                    archived_at=row.archived_at,
+                    item_count=0,
+                    items=[],
+                )
+            )
+        rounds[-1].items.append(MediaArchiveItemResponse.model_validate(row))
+        rounds[-1].item_count += 1
+
+    return MediaArchiveListResponse(
+        task_id=task_id, total_rounds=len(rounds), rounds=rounds
     )
 
 

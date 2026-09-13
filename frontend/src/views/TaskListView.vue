@@ -86,12 +86,21 @@ function goToResults(taskId) {
 async function onRegenerate(task) {
   try {
     await ElMessageBox.confirm(
-      `将删除「${task.title}」的所有生成结果并重新开始，确定吗？`,
+      `将重新生成「${task.title}」的分镜与视频；` +
+      `已生成的视频、配音与成片会归档到「视频生成」页的「历史版本」可回看，` +
+      `资产拆解结果与已生成的资产图保留（需重做资产请到结果页点「AI 重新提取」）。确定吗？`,
       "确认重新生成",
       { confirmButtonText: "确定", cancelButtonText: "取消", type: "warning" }
     );
-    await regenerateTask(task.id);
-    ElMessage.success("已重新入队，请等待处理");
+    const res = await regenerateTask(task.id);
+    const kept = res.data?.assets_preserved || 0;
+    const archived = res.data?.archived_count || 0;
+    const parts = [];
+    if (archived) parts.push(`归档第 ${res.data.archived_round} 轮 ${archived} 个媒体`);
+    if (kept) parts.push(`保留 ${kept} 个资产`);
+    ElMessage.success(
+      parts.length ? `已重新入队（${parts.join("，")}）` : "已重新入队，请等待处理"
+    );
     await fetchTasks();
   } catch (e) {
     if (e !== "cancel") ElMessage.error("重新生成失败");

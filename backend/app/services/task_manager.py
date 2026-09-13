@@ -1,10 +1,10 @@
 """
 级联任务编排器
 完整链路：
-  原著文本 → 分片预处理 → 剧本大纲 → 人物角色设定 → 分镜脚本
-  → 图生视频 → 角色配音 → 字幕合成
+  原著文本 → 分片预处理 → 资产拆解（角色/场景/道具）→ 导演镜头拆解
+  → 图生视频 → FFmpeg 拼接
 
-阶段 1-4 为文本链路，后续为媒体链路。
+阶段 1-3 为文本链路，后续为媒体链路。
 媒体链路在文本链完成后自动触发（可在配置中关闭）。
 """
 import asyncio
@@ -26,6 +26,8 @@ from app.services.llm_service import llm_service
 from app.services.minimax_service import minimax_service
 from app.services.video_composer import video_composer
 from app.services.storyboard_polish import polish_storyboards
+from app.services.asset_extractor import extract_assets_from_source
+from app.services.media_archive import current_round, round_oss_key
 from app.services.events import event_bus
 from app.utils.exceptions import (
     LLMAPIError,
@@ -52,11 +54,12 @@ class TaskManager:
     """
     级联任务调度器。
 
-    链路四阶段：
+    链路阶段：
     1. 文本预处理（分片）
-    2. 生成大纲 → 存入 outlines 表
-    3. 生成人物 → 解析后逐条存入 characters 表
-    4. 生成分镜 → 解析后逐条存入 storyboards 表
+    2. 资产拆解 → 从原著源文本提取角色/场景/道具存入 asset_items 表
+       （任务已有资产时跳过，保留已生成的资产图与手工编辑）
+    3. 导演镜头拆解 → 解析后逐条存入 storyboards 表
+    4. 媒体链路（可在配置中关闭）
 
     每阶段更新任务进度，异常时标记 failed 并记录友好错误信息。
     """
@@ -128,12 +131,34 @@ class TaskManager:
         )
         self._update_status(task_id, "running", progress=20)
 
-        # ── 阶段 2：导演镜头拆解（单次 LLM 调用，模板见 director_storyboard_skill）──
-        logger.info(f"[{task_id}] 阶段2: 导演镜头拆解")
-        self._update_status(task_id, "running", progress=25)
-
         # 阶段超时 = 单次 LLM 超时 × (1 + 重试次数) + 缓冲，保证内部重试有机会跑完
         stage_timeout = settings.llm_call_timeout * (settings.llm_max_retries + 1) + 60
+
+        # ── 阶段 2：资产拆解（早于镜头拆解，输入为原著源文本）──
+        # 已有资产则跳过：重新任务不重做资产，已生成的资产图与手工编辑一并保留；
+        # 需要重做请在前端点「AI 重新提取」。
+        asset_count = self._count_assets(task_id)
+        if asset_count:
+            logger.info(f"[{task_id}] 阶段2: 已有 {asset_count} 个资产，跳过资产拆解")
+        else:
+            logger.info(f"[{task_id}] 阶段2: 资产拆解（原著源文本）")
+            self._update_status(task_id, "running", progress=25)
+            try:
+                stats = await asyncio.wait_for(
+                    extract_assets_from_source(task_id, source_text),
+                    timeout=stage_timeout,
+                )
+                logger.info(
+                    f"[{task_id}] 资产拆解完成: 新增 {stats['added']} / 更新 {stats['updated']} 个资产"
+                )
+            except Exception as e:
+                # 资产拆解失败不阻断镜头链路：结果页仍可手动「AI 重新提取」
+                logger.warning(f"[{task_id}] ⚠️ 资产拆解失败（非致命，可稍后重新提取）: {e}")
+        self._update_status(task_id, "running", progress=35)
+
+        # ── 阶段 3：导演镜头拆解（单次 LLM 调用，模板见 director_storyboard_skill）──
+        logger.info(f"[{task_id}] 阶段3: 导演镜头拆解")
+        self._update_status(task_id, "running", progress=40)
 
         storyboard_text = await asyncio.wait_for(
             llm_service.generate_storyboard_single(chunks),
@@ -193,7 +218,7 @@ class TaskManager:
         self._save_storyboards(task_id, scene_list)
         self._update_status(task_id, "running", progress=78)
 
-        # ── 阶段 3-4：媒体链路（文生视频/图生视频 + FFmpeg 拼接）──
+        # ── 阶段 4-5：媒体链路（文生视频/图生视频 + FFmpeg 拼接）──
         video_paths = []
         if settings.auto_media_pipeline:
             video_paths = await self._run_storyboard_to_video(task_id, scene_list)
@@ -818,15 +843,15 @@ class TaskManager:
         return results
 
     # ------------------------------------------------------------------
-    # 阶段 5：分镜→视频（MiniMax-H3 文生视频）
+    # 阶段 4：分镜→视频（MiniMax-H3 文生视频）
     # ------------------------------------------------------------------
 
     async def _run_storyboard_to_video(
         self, task_id: str, scene_list: list[dict]
     ) -> list[str]:
-        """阶段5：MiniMax-H3 文生视频，每分镜一键生成，含内置音频。"""
+        """阶段4：MiniMax-H3 文生视频，每分镜一键生成，含内置音频。"""
         total = len(scene_list)
-        logger.info(f"[{task_id}] 阶段5: 分镜→视频 MiniMax-H3 ({total} 个分镜)")
+        logger.info(f"[{task_id}] 阶段4: 分镜→视频 MiniMax-H3 ({total} 个分镜)")
         self._update_status(task_id, "running", progress=78)
 
         video_paths = []
@@ -928,7 +953,7 @@ class TaskManager:
         character_list: list[dict],
     ) -> None:
         """
-        阶段6：视频拼接（带转场）。
+        阶段5：视频拼接（带转场）。
         MiniMax-H3 已含音频，无需额外配音轨。转场来自 scene_list.transition。
         注：字幕烧录仍由 video_composer.composite 提供，带转场路径暂不烧字幕。
         """
@@ -936,7 +961,7 @@ class TaskManager:
             logger.warning(f"[{task_id}] 无可用视频，跳过拼接")
             return
 
-        logger.info(f"[{task_id}] 阶段6: FFmpeg 视频拼接")
+        logger.info(f"[{task_id}] 阶段5: FFmpeg 视频拼接")
         self._update_status(task_id, "running", progress=97)
 
         asset = self._create_media_asset(
@@ -1040,7 +1065,7 @@ class TaskManager:
                     minimax_service.generate_video(task_id, scene_num, prompt, image_url=image_url, duration=scene_duration),
                     timeout=300,
                 )
-            oss_key = await self._upload_to_oss(path)
+            oss_key = await self._upload_to_oss(path, task_id, current_round(task_id))
             self._update_media_asset(asset.id, "success", file_path=path, oss_key=oss_key)
             return {"status": "success", "file_path": path, "asset_id": asset.id}
         except asyncio.TimeoutError:
@@ -1072,6 +1097,17 @@ class TaskManager:
                 db.delete(a)
             db.commit()
             return count
+        finally:
+            db.close()
+
+    @staticmethod
+    def _count_assets(task_id: str) -> int:
+        """任务已有资产数量（> 0 时链路跳过资产拆解，避免冲掉已生成的资产图）"""
+        from app.models.asset import AssetItem
+
+        db = SessionLocal()
+        try:
+            return db.query(AssetItem).filter(AssetItem.task_id == task_id).count()
         finally:
             db.close()
 
@@ -1237,13 +1273,23 @@ class TaskManager:
             db.close()
 
     @staticmethod
-    async def _upload_to_oss(local_path: str | None) -> str | None:
-        """上传本地文件到 OSS，失败返回 None（降级为本地 /media）"""
+    async def _upload_to_oss(
+        local_path: str | None,
+        task_id: str | None = None,
+        round_no: int | None = None,
+    ) -> str | None:
+        """
+        上传本地文件到 OSS，失败返回 None（降级为本地 /media）。
+
+        传入 task_id / round_no 时使用带轮次前缀的 key，避免新产物覆盖归档轮的同名对象
+        （视频文件名是确定性的 scene_NNN.mp4）。
+        """
         if not local_path:
             return None
         try:
             from app.services.storage import storage
-            return await asyncio.to_thread(storage.upload, local_path)
+            key = round_oss_key(local_path, task_id, round_no) if task_id and round_no else None
+            return await asyncio.to_thread(storage.upload, local_path, key)
         except Exception as e:
             logger.warning(f"OSS 上传失败（忽略）: {local_path} -> {e}")
             return None
