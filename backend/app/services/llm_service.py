@@ -360,8 +360,8 @@ class LLMService:
 
     async def generate_storyboard_single(self, text_chunks: list[str]) -> str:
         """
-        单次调用：基于小说原文生成完整「导演镜头脚本」。
-        利用大窗口模型一次调用完成所有镜头，镜数由 LLM 根据剧本判断。
+        单次调用：把小说原文改编成完整「导演镜头脚本」。
+        利用大窗口模型一次调用完成所有镜头，镜数由 LLM 根据核心剧情线判断。
         模板与硬约束见 app/services/director_storyboard_skill.py。
 
         Returns:
@@ -376,8 +376,9 @@ class LLMService:
             logger.info(f"分镜输入截断至 ~{max_input} tokens")
 
         user_message = (
-            f"以下是小说原文，请根据剧本内容自行判断镜头数量，"
-            f"严格按照模板输出导演镜头脚本：\n\n{combined}"
+            f"以下是小说的一个章节。请以漫剧导演的身份把它改编成导演镜头脚本："
+            f"先提炼核心剧情线，再围绕主线决定镜头数量，"
+            f"严格按照模板输出：\n\n{combined}"
         )
 
         return await self._call_llm(

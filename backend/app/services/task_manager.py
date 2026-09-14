@@ -28,6 +28,10 @@ from app.services.llm_service import llm_service
 from app.services.minimax_service import minimax_service
 from app.services.video_composer import video_composer
 from app.services.storyboard_polish import polish_storyboards
+from app.services.director_storyboard_skill import (
+    SCENE_DURATION_MAX,
+    SCENE_DURATION_MIN,
+)
 from app.services.asset_extractor import extract_assets_from_source
 from app.services.media_archive import current_round, round_oss_key
 from app.services.events import event_bus
@@ -426,7 +430,10 @@ class TaskManager:
             if duration_str:
                 dur_match = re.search(r"(\d+)", duration_str)
                 if dur_match:
-                    scene_duration = max(4.0, min(float(dur_match.group(1)), 15.0))
+                    scene_duration = max(
+                        float(SCENE_DURATION_MIN),
+                        min(float(dur_match.group(1)), float(SCENE_DURATION_MAX)),
+                    )
 
             # 跳过不完整的镜头
             if not shot_size or not subject:
@@ -581,6 +588,13 @@ class TaskManager:
             f"导演模板解析完成: {len(results)} 个镜头"
             f"（分秒画面 {sum(1 for r in results if '秒：' in r['visual_description'])} 镜含节拍）"
         )
+
+        # 镜数由导演按主线节点自行判断，没有标准答案；这里只兜底明显退化的输出
+        # （模型偷懒给 1-2 镜，或失控拆出几十镜），不构成对创作判断的干预。
+        if len(results) < 3 or len(results) > 30:
+            logger.warning(
+                f"镜数 {len(results)} 明显偏离常规区间（3-30），疑似模型退化或失控，建议人工复核"
+            )
         return results
 
     @staticmethod
@@ -847,6 +861,130 @@ class TaskManager:
         return results
 
     @staticmethod
+    def _rescale_beat_spans(
+        beats: list[tuple[str, str]], duration: float
+    ) -> list[tuple[str, str]]:
+        """
+        把分秒画面行的时间轴归一化到镜头时长，返回新的 (时间戳, 画面) 列表。
+
+        只作用于**派生字段**（image_prompt / visual_description）。原因：时长被收口
+        （越界钳制，或将原文留白补齐）后，若送进 MiniMax-H3 的画面描述仍写「14-20秒」，
+        模型收到的就是一份与成片时长自相矛盾的指令。脚本原文块（raw_script /
+        description）不在此列——它必须保持模型的原样输出，供结果页直出与编辑回填。
+
+        时间戳不是模板格式、或已经对齐时，原样返回**同一个 list 对象**，
+        调用方可用 `is` 判断是否发生了归一。顺带把不连续的行拉平。
+        """
+        if not beats:
+            return beats
+
+        spans: list[tuple[int, int]] = []
+        for ts, _ in beats:
+            m = re.match(r"(\d+)-(\d+)秒", ts)
+            if not m:
+                return beats          # 时间戳不是模板格式，不猜
+            spans.append((int(m.group(1)), int(m.group(2))))
+
+        total = int(round(duration))
+        contiguous = (
+            spans[0][0] == 0
+            and all(start == spans[i - 1][1] for i, (start, _) in enumerate(spans) if i)
+            and spans[-1][1] == total
+        )
+        if contiguous:
+            return beats              # 首行从 0 起、逐行相接、末行等于镜头时长
+
+        # 按比例缩放各行的结束秒数，保证严格递增、末行正好等于镜头时长
+        count = len(spans)
+        scale = total / (spans[-1][1] or 1)
+        scaled: list[int] = []
+        for i, (_, end) in enumerate(spans):
+            if i == count - 1:
+                value = total
+            else:
+                floor = (scaled[-1] + 1) if scaled else 1
+                # 前面不早于上一行，后面给剩余每行留出至少 1 秒
+                value = max(floor, min(int(round(end * scale)), total - (count - 1 - i)))
+            scaled.append(value)
+
+        result: list[tuple[str, str]] = []
+        prev = 0
+        for (_, desc), end in zip(beats, scaled):
+            result.append((f"{prev}-{end}秒", desc))
+            prev = end
+        return result
+
+    @staticmethod
+    def _check_director_shot_contract(
+        scene_num: int,
+        duration: float,
+        beats: list[tuple[str, str]],
+        kv: dict,
+        note_lines: list[str],
+        dialogue_lines: list[str],
+        atmosphere: str,
+    ) -> list[str]:
+        """
+        按 director-storyboard 模板契约做确定性体检，返回问题清单。
+
+        这里是提示词里那些「硬约束」的可测版本——模型是否照做，靠日志说话，
+        而不是靠人肉通读脚本。**只报告，不改写**：脚本原文是结果页直出与编辑回填的
+        唯一载体，静默重写会让用户看到的和数据库里的不一致。
+        契约定义见 app/services/director_storyboard_skill.py。
+        """
+        issues: list[str] = []
+
+        # 1) 分秒画面行：3-4 行、秒数连续无重叠、末行结束秒数等于镜头时长
+        if not beats:
+            issues.append("缺少分秒画面行")
+        else:
+            if not 3 <= len(beats) <= 4:
+                issues.append(f"分秒画面 {len(beats)} 行（模板要求 3-4 行）")
+            spans = [
+                (int(m.group(1)), int(m.group(2)))
+                for ts, _ in beats
+                if (m := re.match(r"(\d+)-(\d+)秒", ts))
+            ]
+            for (_, prev_end), (cur_start, _) in zip(spans, spans[1:]):
+                if cur_start != prev_end:
+                    issues.append(f"分秒画面区间不连续: 接不上 {prev_end}→{cur_start} 秒")
+                    break
+            if spans and abs(spans[-1][1] - duration) > 0.5:
+                issues.append(
+                    f"末行结束秒数 {spans[-1][1]} 与镜头时长 {duration:g} 秒不一致"
+                )
+
+        # 2) 机器参数六键齐全：缺项会让景别/角度/情绪等字段落空，只能吃兜底值
+        missing = [
+            field
+            for field in ("shot_size", "camera_angle", "camera_movement",
+                          "mood", "composition", "transition")
+            if not kv.get(field)
+        ]
+        if missing:
+            issues.append(f"机器参数缺失: {'/'.join(missing)}")
+
+        # 3) 氛围段
+        if not atmosphere:
+            issues.append("缺少氛围段")
+
+        # 4) 对白条数上限
+        if len(dialogue_lines) > 7:
+            issues.append(f"对白 {len(dialogue_lines)} 条（模板上限 7 条）")
+
+        # 5) 衔接标注：首镜用【首镜头】，其余用【衔接提示→本镜】；末镜桥接一律不可缺
+        note_text = "\n".join(note_lines)
+        if scene_num == 1:
+            if "【首镜头】" not in note_text:
+                issues.append("缺少【首镜头】标注")
+        elif "【衔接提示" not in note_text:
+            issues.append("缺少【衔接提示→本镜】标注")
+        if "【结尾桥接" not in note_text:
+            issues.append("缺少【结尾桥接】标注")
+
+        return issues
+
+    @staticmethod
     def _parse_director_shot_block(
         scene_num: int, header_rest: str, block: str, raw_block: str
     ) -> dict:
@@ -870,7 +1008,16 @@ class TaskManager:
             duration = float(dur_match.group(2))
         else:
             scene_title = re.sub(r"[（(]时长[：:].*$", "", header_rest).strip()
-        duration = max(1.0, min(duration, 120.0))
+        # 时长与下游视频生成的钳制口径对齐（见 director_storyboard_skill）。
+        # 越界时成片只会按边界出片，分秒画面行末尾与【结尾桥接】会落空，
+        # 因此在此收口；原文块本身不改写，仅在日志留痕供审计。
+        raw_duration = duration
+        duration = max(float(SCENE_DURATION_MIN), min(duration, float(SCENE_DURATION_MAX)))
+        if abs(raw_duration - duration) > 1e-6:
+            logger.warning(
+                f"镜头 {scene_num} 时长 {raw_duration:g} 秒超出 "
+                f"{SCENE_DURATION_MIN}-{SCENE_DURATION_MAX} 秒，已收口为 {duration:g} 秒"
+            )
 
         # ── 先无条件摘出机器键值行 ──
         # 不依赖「摄影与视觉要求：」块头存在：模型一旦漏写块头，机器行会掉进
@@ -955,8 +1102,25 @@ class TaskManager:
         )
         kv = TaskManager._split_kv_line(kv_value)
 
+        # 模板契约体检：模型没照做的项在日志里点名，便于回看与调参
+        contract_issues = TaskManager._check_director_shot_contract(
+            scene_num, duration, beats, kv, note_lines, dialogue_lines, atmosphere
+        )
+        if contract_issues:
+            logger.warning(
+                f"镜头 {scene_num} 未满足模板契约: " + "；".join(contract_issues)
+            )
+
+        # 派生字段的时间轴按镜头时长归一；原文块仍是模型原样输出
+        beats_for_prompt = TaskManager._rescale_beat_spans(beats, duration)
+        if beats_for_prompt is not beats:
+            logger.warning(
+                f"镜头 {scene_num} 分秒画面时间轴已按镜头时长 {duration:g} 秒归一"
+                f"（原文块保留模型原值，末行原为 {beats[-1][0]}）"
+            )
+
         # ── 组装字段 ──
-        beat_text = "\n".join(f"{ts}： {desc}" for ts, desc in beats)
+        beat_text = "\n".join(f"{ts}： {desc}" for ts, desc in beats_for_prompt)
         subject = " ".join(desc for _, desc in beats).strip() or atmosphere
         dialogue_text = "\n".join(dialogue_lines).strip() or "@无"
 
@@ -1040,7 +1204,7 @@ class TaskManager:
             dialogue = scene.get("dialogue", "")
             location = scene.get("location", "")
             scene_duration = int(scene.get("duration_seconds", 6) or 6)
-            scene_duration = max(4, min(scene_duration, 15))
+            scene_duration = max(SCENE_DURATION_MIN, min(scene_duration, SCENE_DURATION_MAX))
 
             global_prefix = TaskManager._get_global_prefix(task_id)
 
@@ -1163,7 +1327,7 @@ class TaskManager:
             dialogue_text = dialogue_text[2:].strip()
         location = scene.get("location", "")
         scene_duration = int(scene.get("duration_seconds", 6) or 6)
-        scene_duration = max(4, min(scene_duration, 15))
+        scene_duration = max(SCENE_DURATION_MIN, min(scene_duration, SCENE_DURATION_MAX))
 
         self._cleanup_asset(task_id, scene_num, "video")
 
