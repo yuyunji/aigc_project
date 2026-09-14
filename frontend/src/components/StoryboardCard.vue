@@ -5,6 +5,8 @@
   点「✏️ 编辑」整块进入可编辑状态，保存后由服务端按同一套解析逻辑重算
   景别/角度/运镜/情绪/构图/转场等派生字段，视频生成链路立即生效。
 
+  正文下方另有「完整生成 Prompt」折叠面板，展开是与正文完全一致的脚本原文。
+
   另有全局风格卡（片头风格首行，注入所有 prompt）独立置顶。
 
   两代数据兼容：raw_script 为空时回落到 description（旧数据是重新拼装的 Markdown）。
@@ -74,10 +76,10 @@
           placeholder="镜头NN：标题（时长：N秒）…"
         />
 
-        <!-- 完整生成 Prompt -->
-        <el-collapse v-if="!isEditing(scene) && scene.image_prompt" class="prompt-collapse">
+        <!-- 完整生成 Prompt：与正文同一段脚本原文，仅在正文限高内滚时提供一处整段可读的位置 -->
+        <el-collapse v-if="!isEditing(scene)" class="prompt-collapse">
           <el-collapse-item title="📝 完整生成 Prompt">
-            <p class="prompt-text">{{ scene.image_prompt }}</p>
+            <p class="prompt-text">{{ scriptBody(scene) }}</p>
           </el-collapse-item>
         </el-collapse>
 
@@ -312,6 +314,7 @@ function statusLabel(m) {
   color: var(--color-text-primary);
 }
 
+/* 不限高、不内滚：整段脚本直接铺开，长镜头也一次读完 */
 .sb-script {
   white-space: pre-wrap;
   word-break: break-word;
@@ -319,8 +322,6 @@ function statusLabel(m) {
   border-left: 3px solid var(--color-primary-light);
   border-radius: 0 8px 8px 0;
   padding: 12px 16px;
-  max-height: 460px;
-  overflow-y: auto;
 }
 
 .sb-editor {
