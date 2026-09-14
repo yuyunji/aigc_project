@@ -138,14 +138,19 @@ const props = defineProps({
 
 const emit = defineEmits(["generate-video", "retry", "saved"]);
 
-// 编辑态：场景号 -> 草稿文本（同时充当「是否正在编辑」的判定）
+// 编辑态：场景号 -> 草稿文本（键存在即表示该卡处于编辑态）
 const drafts = reactive({});
 const saving = ref(null);        // 正在保存的场景号；"global" 表示全局风格卡
 const globalEditing = ref(false);
 const globalDraft = ref("");
 
+/**
+ * 必须「读一次属性」来判定：Vue 3 的 reactive 代理没有 getOwnPropertyDescriptor 拦截器，
+ * Object.prototype.hasOwnProperty 走的是 [[GetOwnProperty]]，不经过 get 代理、不收集依赖，
+ * 于是 drafts 变了模板也不会重渲染——点「编辑」界面毫无反应，按钮像失灵。
+ */
 function isEditing(scene) {
-  return Object.prototype.hasOwnProperty.call(drafts, scene.scene_number);
+  return drafts[scene.scene_number] !== undefined;
 }
 
 /** 可编辑原文：优先 raw_script；旧数据回落到 description */
