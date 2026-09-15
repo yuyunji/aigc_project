@@ -65,21 +65,33 @@
           </div>
         </div>
 
-        <!-- 脚本正文：原文直出 -->
-        <div v-if="!isEditing(scene)" class="sb-body sb-script">{{ scriptBody(scene) }}</div>
+        <!-- 脚本正文：原文直出，@资产名 高亮（命中资产图的名字才高亮，见 mentionRe） -->
+        <div v-if="!isEditing(scene)" class="sb-body sb-script">
+          <span
+            v-for="(seg, i) in highlightSegments(scriptBody(scene))"
+            :key="i"
+            :class="{ 'at-mention': seg.at }"
+          >{{ seg.text }}</span>
+        </div>
         <el-input
           v-else
           v-model="drafts[scene.scene_number]"
           type="textarea"
           :autosize="{ minRows: 10, maxRows: 40 }"
           class="sb-editor"
-          placeholder="镜头NN：标题（时长：N秒）…"
+          placeholder="镜头NN：标题（时长：N秒）…（「人物角色核心提示词：」行可用 @角色名 引用资产图）"
         />
 
         <!-- 完整生成 Prompt：与正文同一段脚本原文，仅在正文限高内滚时提供一处整段可读的位置 -->
         <el-collapse v-if="!isEditing(scene)" class="prompt-collapse">
           <el-collapse-item title="📝 完整生成 Prompt">
-            <p class="prompt-text">{{ scriptBody(scene) }}</p>
+            <p class="prompt-text">
+              <span
+                v-for="(seg, i) in highlightSegments(scriptBody(scene))"
+                :key="i"
+                :class="{ 'at-mention': seg.at }"
+              >{{ seg.text }}</span>
+            </p>
           </el-collapse-item>
         </el-collapse>
 
@@ -123,7 +135,7 @@
 </template>
 
 <script setup>
-import { ref, reactive } from "vue";
+import { computed, ref, reactive } from "vue";
 import { ElMessage } from "element-plus";
 import { updateStoryboard, updateGlobalPrefix } from "../api/task";
 
@@ -132,6 +144,8 @@ const props = defineProps({
   loading: { type: Boolean, default: false },
   taskId: { type: String, default: "" },
   mediaAssets: { type: Array, default: () => [] },
+  /** 任务资产（角色/场景/道具），用于把脚本里的 @资产名 高亮 */
+  assets: { type: Array, default: () => [] },
   /** 任务级全局风格前缀（片头风格首行） */
   globalPrefix: { type: String, default: "" },
 });
@@ -165,6 +179,38 @@ function editableText(scene) {
 function scriptBody(scene) {
   const text = editableText(scene);
   return text.replace(/^[ \t#>*]*镜头\s*\d+\s*[：:][^\n]*(\n|$)/, "").trim() || text;
+}
+
+/**
+ * @提及的匹配式：只认「名字命中任务资产」的 @，与后端 TaskManager._at_mentions 同口径——
+ * 高亮因此表示「这个名字真的能解析到资产图」，而不是任意 @ 开头的一串字。
+ * 名字按长度降序做交替，长名优先（资产同时有「韩」与「韩萧」时 @韩萧 不会被切成 @韩 + 萧）。
+ */
+const mentionRe = computed(() => {
+  const names = (props.assets || [])
+    .map((a) => (a.name || "").trim())
+    .filter(Boolean)
+    .sort((a, b) => b.length - a.length)
+    .map((n) => n.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
+  return names.length ? new RegExp(`@(?:${names.join("|")})`, "g") : null;
+});
+
+/** 把正文切成 [{text, at}] 片段：只做文本切分，不拼 HTML */
+function highlightSegments(text) {
+  const re = mentionRe.value;
+  if (!re || !text) return [{ text, at: false }];
+
+  const segs = [];
+  let last = 0;
+  let m;
+  re.lastIndex = 0;   // 复用同一个 global 正则，每次重置游标
+  while ((m = re.exec(text)) !== null) {
+    if (m.index > last) segs.push({ text: text.slice(last, m.index), at: false });
+    segs.push({ text: m[0], at: true });
+    last = m.index + m[0].length;
+  }
+  if (last < text.length) segs.push({ text: text.slice(last), at: false });
+  return segs;
 }
 
 function sceneTitle(scene) {
@@ -327,6 +373,15 @@ function statusLabel(m) {
   border-left: 3px solid var(--color-primary-light);
   border-radius: 0 8px 8px 0;
   padding: 12px 16px;
+}
+
+/* @资产名：命中资产的高亮，提示这处引用会带出对应资产图 */
+.at-mention {
+  color: var(--color-primary);
+  font-weight: 600;
+  background: var(--color-primary-bg);
+  border-radius: 4px;
+  padding: 0 2px;
 }
 
 .sb-editor {

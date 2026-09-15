@@ -92,6 +92,11 @@ def _get_scene_or_404(task_id: str, scene_number: int) -> dict:
             "image_prompt": s.image_prompt or "",
             "duration_seconds": s.duration_seconds or 5.0,
             "description": s.description or "",
+            # 单镜重生成视频走的是与链路不同的第二条 prompt 组装路径，
+            # 这两个字段缺一不可：raw_script 是 @ 引用的解析源，
+            # character_core_prompt 是前置的角色服装锁
+            "raw_script": s.raw_script or "",
+            "character_core_prompt": s.character_core_prompt or "",
         }
     finally:
         db.close()

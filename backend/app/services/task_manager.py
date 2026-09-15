@@ -211,9 +211,16 @@ class TaskManager:
         logger.info(f"[{task_id}] 阶段3: 导演镜头拆解")
         self._update_status(task_id, "running", progress=40)
 
+        # 角色设定：从资产拆解确定性拼装（阶段2 已先执行）。注入后每镜的
+        # 「人物角色核心提示词：」行只能从这里取名字与着装状态，与资产图口径一致；
+        # 资产缺失（拆解失败/无角色）时传空，模板规则退化为「从原文提炼」。
+        character_prompts = TaskManager._load_character_prompts(task_id)
+
         async with TaskManager._progress_heartbeat(task_id, 40, 76):
             storyboard_text = await asyncio.wait_for(
-                llm_service.generate_storyboard_single(chunks),
+                llm_service.generate_storyboard_single(
+                    chunks, character_prompts=character_prompts
+                ),
                 timeout=stage_timeout,
             )
 
@@ -646,6 +653,7 @@ class TaskManager:
             storyboard.scene_title = parsed["scene_title"]
             storyboard.duration_seconds = parsed["duration_seconds"]
             storyboard.raw_script = parsed["raw_script"]
+            storyboard.character_core_prompt = parsed["character_core_prompt"]
             storyboard.description = parsed["description"]
             storyboard.shot_size = parsed["shot_size"]
             storyboard.camera_angle = parsed["camera_angle"]
@@ -923,6 +931,7 @@ class TaskManager:
         note_lines: list[str],
         dialogue_lines: list[str],
         atmosphere: str,
+        character_core_prompt: str = "",
     ) -> list[str]:
         """
         按 director-storyboard 模板契约做确定性体检，返回问题清单。
@@ -968,11 +977,15 @@ class TaskManager:
         if not atmosphere:
             issues.append("缺少氛围段")
 
-        # 4) 对白条数上限
+        # 4) 人物角色核心提示词行（缺失时视频 prompt 少一道服装锁，不影响可用性）
+        if not character_core_prompt:
+            issues.append("缺少「人物角色核心提示词：」行")
+
+        # 5) 对白条数上限
         if len(dialogue_lines) > 7:
             issues.append(f"对白 {len(dialogue_lines)} 条（模板上限 7 条）")
 
-        # 5) 衔接标注：首镜用【首镜头】，其余用【衔接提示→本镜】；末镜桥接一律不可缺
+        # 6) 衔接标注：首镜用【首镜头】，其余用【衔接提示→本镜】；末镜桥接一律不可缺
         note_text = "\n".join(note_lines)
         if scene_num == 1:
             if "【首镜头】" not in note_text:
@@ -1019,14 +1032,27 @@ class TaskManager:
                 f"{SCENE_DURATION_MIN}-{SCENE_DURATION_MAX} 秒，已收口为 {duration:g} 秒"
             )
 
-        # ── 先无条件摘出机器键值行 ──
+        # ── 先无条件摘出机器行：镜头参数 + 人物角色核心提示词 ──
         # 不依赖「摄影与视觉要求：」块头存在：模型一旦漏写块头，机器行会掉进
         # 分秒画面之后的文本里被当成台词吞掉，字段静默丢失。
+        # 角色行同理：它位于标题行与氛围段之间，留在文本里会被当成氛围段的一部分，
+        # 污染 atmosphere → environment/location/image_prompt 首段。
         kv_line = ""
+        character_core_prompt = ""
         kept: list[str] = []
         for ln in block_lines:
             if not kv_line and re.match(r"^\s*镜头参数\s*[：:]", ln):
                 kv_line = ln.strip().strip("*").strip()
+                continue
+            if not character_core_prompt and re.match(
+                r"^\s*人物角色核心提示词\s*[：:]", ln
+            ):
+                # 只存标签后的内容：字段名本身就是这个标签，
+                # 视频 prompt 注入时会重新拼「人物角色核心提示词：」前缀，
+                # 把标签一并存下会拼出双前缀
+                character_core_prompt = re.sub(
+                    r"^\s*人物角色核心提示词\s*[：:]\s*", "", ln.strip().strip("*").strip()
+                )
                 continue
             kept.append(ln)
         block_lines = kept
@@ -1104,7 +1130,8 @@ class TaskManager:
 
         # 模板契约体检：模型没照做的项在日志里点名，便于回看与调参
         contract_issues = TaskManager._check_director_shot_contract(
-            scene_num, duration, beats, kv, note_lines, dialogue_lines, atmosphere
+            scene_num, duration, beats, kv, note_lines, dialogue_lines, atmosphere,
+            character_core_prompt,
         )
         if contract_issues:
             logger.warning(
@@ -1165,6 +1192,7 @@ class TaskManager:
             "image_prompt": image_prompt,
             "description": raw_block,
             "raw_script": raw_block,
+            "character_core_prompt": character_core_prompt,
             "global_prefix": "",
             "location": (atmosphere or "")[:80],
             "visual_description": visual_description,
@@ -1207,6 +1235,7 @@ class TaskManager:
             scene_duration = max(SCENE_DURATION_MIN, min(scene_duration, SCENE_DURATION_MAX))
 
             global_prefix = TaskManager._get_global_prefix(task_id)
+            char_core = (scene.get("character_core_prompt") or "").strip()
 
             if image_prompt and image_prompt.strip():
                 prompt_parts = []
@@ -1214,6 +1243,10 @@ class TaskManager:
                     prompt_parts.append(global_prefix[:800])
                 elif settings.image_style:
                     prompt_parts.append(f"Style: {settings.image_style}")
+                # 角色核心提示词紧跟风格之后：它是本镜角色的身份与服装锁，
+                # 越靠前越不容易被后面几百字的画面描述稀释
+                if char_core:
+                    prompt_parts.append(f"人物角色核心提示词：{char_core[:500]}")
                 prompt_parts.append(image_prompt[:1500])
                 if asset_ref["ref_text"]:
                     prompt_parts.append(f"Design reference: {asset_ref['ref_text']}")
@@ -1230,6 +1263,8 @@ class TaskManager:
                     prompt_parts.append(global_prefix[:800])
                 elif settings.image_style:
                     prompt_parts.append(f"Style: {settings.image_style}")
+                if char_core:
+                    prompt_parts.append(f"人物角色核心提示词：{char_core[:500]}")
                 if camera:
                     prompt_parts.append(f"Camera: {camera}")
                 if action:
@@ -1335,9 +1370,10 @@ class TaskManager:
         asset_ref = TaskManager._get_asset_reference_for_shot(task_id, scene)
         image_url = asset_ref["image_url"]
 
-        # 构造 prompt（全局前缀 + 模板 image_prompt + 资产参考，强约束）
+        # 构造 prompt（全局前缀 + 角色核心提示词 + 模板 image_prompt + 资产参考，强约束）
         global_prefix = TaskManager._get_global_prefix(task_id)
         image_prompt = scene.get("image_prompt", "")
+        char_core = (scene.get("character_core_prompt") or "").strip()
 
         if image_prompt and image_prompt.strip():
             parts = []
@@ -1345,6 +1381,8 @@ class TaskManager:
                 parts.append(global_prefix[:800])
             elif settings.image_style:
                 parts.append(f"Style: {settings.image_style}")
+            if char_core:
+                parts.append(f"人物角色核心提示词：{char_core[:500]}")
             parts.append(image_prompt[:1500])
             if dialogue_text:
                 parts.append(f"台词/画外音：{dialogue_text[:800]}")
@@ -1364,6 +1402,8 @@ class TaskManager:
                 parts.append(global_prefix[:800])
             elif settings.image_style:
                 parts.append(f"Style: {settings.image_style}")
+            if char_core:
+                parts.append(f"人物角色核心提示词：{char_core[:500]}")
             if camera:
                 parts.append(f"Camera: {camera}")
             if action:
@@ -1441,10 +1481,78 @@ class TaskManager:
             db.close()
 
     @staticmethod
+    def _load_character_prompts(task_id: str) -> str:
+        """
+        读取任务的角色资产并拼装「角色设定」文本（注入分镜 LLM）。
+
+        失败不阻断链路：返回空串，模板规则退化为「从原文提炼」——
+        角色设定是质量增强项，不该让分镜阶段整体失败。
+        """
+        from app.models.asset import AssetItem
+        from app.services.consistency import build_character_core_prompts
+
+        db = SessionLocal()
+        try:
+            # 拼装在 session 内完成：AssetItem 一旦 detach，未加载属性会炸
+            assets = (
+                db.query(AssetItem)
+                .filter(
+                    AssetItem.task_id == task_id,
+                    AssetItem.category == "character",
+                )
+                .order_by(AssetItem.created_at)
+                .all()
+            )
+            prompts = build_character_core_prompts(assets)
+        except Exception as e:
+            logger.warning(f"[{task_id}] ⚠️ 角色设定不可用（分镜将从原文提炼）: {e}")
+            return ""
+        finally:
+            db.close()
+
+        if prompts:
+            logger.info(
+                f"[{task_id}] 角色设定注入: {len(assets)} 个角色 / {len(prompts)} 字符"
+            )
+        return prompts
+
+    @staticmethod
+    def _at_mentions(text: str, names: list[str]) -> list[str]:
+        """
+        找出 text 中以 `@资产名` 形式被显式引用的资产名（按在文本中出现的先后返回）。
+
+        `@` 本身就是用户写下的显式引用信号，因此只做「名字精确匹配」，不猜字符边界：
+        中文名后面跟的往往是动词（「@林夕看向」）而不是标点，要求断句符会把正常引用判掉。
+        唯一需要裁决的是同一位置的重叠——资产同时有「韩」与「韩萧」时 `@韩萧（…）`
+        同时含两个名字，取最长的，「韩」只是「韩萧」的前缀而非另一次引用。
+
+        匹配在去掉空白的文本上做：`@韩 萧` 也算引用，且不会因换行/空格错过命中。
+        返回的索引仅用于排序与去重，去空白后相对顺序不变。
+        """
+        if not text:
+            return []
+
+        normalized = re.sub(r"\s+", "", text)
+        hits: dict[int, str] = {}
+
+        for name in {n.strip() for n in names if n and n.strip()}:
+            idx = normalized.find("@" + re.sub(r"\s+", "", name))
+            if idx < 0:
+                continue
+            if idx in hits and len(hits[idx]) >= len(name):
+                continue
+            hits[idx] = name
+
+        return [hits[p] for p in sorted(hits)]
+
+    @staticmethod
     def _get_reference_image_paths(task_id: str, shot: dict) -> list[str]:
         """
         收集 ComfyUI 图生视频的多张参考图本地路径。
         顺序：角色图 → 场景图（只保留存在的文件，去重）。
+
+        @ 引用优先：命中时按 @ 出现顺序收全部被引用资产（角色在前），
+        不再做模糊子串猜测；无 @ 时保持原有「第一角色图 + 第一场景图」。
         """
         import os
 
@@ -1470,6 +1578,7 @@ class TaskManager:
         subject = shot.get("subject", "") or ""
         environment = shot.get("environment", "") or ""
         combined_text = f"{subject} {environment}"
+        raw_text = shot.get("raw_script", "") or ""
 
         db = SessionLocal()
         try:
@@ -1481,25 +1590,51 @@ class TaskManager:
                 )
                 .all()
             )
-            char_path = None
-            scene_path = None
-            for a in assets:
-                if not a.image_path or not _name_matches(a.name or "", combined_text):
-                    continue
-                ap = os.path.abspath(a.image_path)
-                if ap in seen:
-                    continue
-                if a.category == "character" and char_path is None:
-                    char_path = a.image_path
-                elif a.category == "scene" and scene_path is None:
-                    scene_path = a.image_path
 
-            for p in (char_path, scene_path):
-                if p and os.path.isfile(p):
-                    paths.append(p)
-                    seen.add(os.path.abspath(p))
+            mentions = TaskManager._at_mentions(raw_text, [a.name or "" for a in assets])
+            if mentions:
+                by_name = {(a.name or "").strip(): a for a in assets}
+                picked = [by_name[n] for n in mentions if n in by_name]
+                ordered = [a for a in picked if a.category == "character"] + [
+                    a for a in picked if a.category != "character"
+                ]
+                for a in ordered:
+                    if not a.image_path:
+                        continue
+                    ap = os.path.abspath(a.image_path)
+                    if ap in seen or not os.path.isfile(a.image_path):
+                        continue
+                    paths.append(a.image_path)
+                    seen.add(ap)
+            else:
+                char_path = None
+                scene_path = None
+                for a in assets:
+                    if not a.image_path or not _name_matches(a.name or "", combined_text):
+                        continue
+                    ap = os.path.abspath(a.image_path)
+                    if ap in seen:
+                        continue
+                    if a.category == "character" and char_path is None:
+                        char_path = a.image_path
+                    elif a.category == "scene" and scene_path is None:
+                        scene_path = a.image_path
+
+                for p in (char_path, scene_path):
+                    if p and os.path.isfile(p):
+                        paths.append(p)
+                        seen.add(os.path.abspath(p))
         finally:
             db.close()
+
+        # ComfyUI 参考图节点数有上限，超出的按顺序丢弃
+        from app.services.comfyui_service import MAX_REF_IMAGES
+
+        if len(paths) > MAX_REF_IMAGES:
+            logger.warning(
+                f"[{task_id}] 参考图 {len(paths)} 张超过上限 {MAX_REF_IMAGES}，已按顺序截断"
+            )
+            paths = paths[:MAX_REF_IMAGES]
 
         return paths
 
@@ -1509,12 +1644,18 @@ class TaskManager:
         为单个分镜查找资产拆解中的参考图片和描述。
         使用分词匹配（2字及以上词组），优先角色图片。
         返回 {"image_url": str|None, "ref_text": str}
+
+        @ 引用优先（@ 行见「人物角色核心提示词：」）：命中时只认被显式引用的资产，
+        不做模糊猜测——猜错会挂上别的角色的脸，比不出图更糟；被引用资产尚未出图时
+        该镜退化为文生视频，但仍把它的描述带进 ref_text。
+        无 @ 时完全保持原分词匹配逻辑。
         """
         from app.models.asset import AssetItem
 
         subject = shot.get("subject", "") or ""
         environment = shot.get("environment", "") or ""
         combined_text = f"{subject} {environment}"
+        raw_text = shot.get("raw_script", "") or ""
 
         def _name_matches(asset_name: str, text: str) -> bool:
             """分词匹配：提取资产名中2字及以上词组，任一词组在文本中出现则匹配"""
@@ -1538,6 +1679,25 @@ class TaskManager:
                 AssetItem.task_id == task_id,
                 AssetItem.image_status == "success",
             ).all()
+
+            mentions = TaskManager._at_mentions(raw_text, [a.name or "" for a in assets])
+            if mentions:
+                by_name = {(a.name or "").strip(): a for a in assets}
+                picked = [by_name[n] for n in mentions if n in by_name]
+                logger.info(f"[{task_id}] 镜头 {shot.get('scene_number')} @引用: {'、'.join(mentions)}")
+                char_url = next(
+                    (a.image_url for a in picked
+                     if a.category == "character" and a.image_url), None
+                )
+                any_url = next((a.image_url for a in picked if a.image_url), None)
+                ref_parts = [
+                    f"{a.name}: {(a.image_prompt or a.description or '')[:100]}"
+                    for a in picked if a.image_prompt or a.description
+                ]
+                return {
+                    "image_url": char_url or any_url,
+                    "ref_text": " | ".join(ref_parts[:8])[:1000],
+                }
 
             image_url = None
             char_url = None  # 角色图片单独记录
@@ -1870,6 +2030,7 @@ class TaskManager:
                     transition=scene_data.get("transition", ""),
                     dialogue_text=scene_data.get("dialogue_text", ""),
                     raw_script=scene_data.get("raw_script", ""),
+                    character_core_prompt=scene_data.get("character_core_prompt", ""),
                 )
                 db.add(storyboard)
             db.commit()

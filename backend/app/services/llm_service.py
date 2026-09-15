@@ -358,15 +358,24 @@ class LLMService:
     # 级联链路
     # ------------------------------------------------------------------
 
-    async def generate_storyboard_single(self, text_chunks: list[str]) -> str:
+    async def generate_storyboard_single(
+        self, text_chunks: list[str], character_prompts: str = ""
+    ) -> str:
         """
         单次调用：把小说原文改编成完整「导演镜头脚本」。
         利用大窗口模型一次调用完成所有镜头，镜数由 LLM 根据核心剧情线判断。
         模板与硬约束见 app/services/director_storyboard_skill.py。
 
+        Args:
+            text_chunks:       原著分片文本
+            character_prompts: 角色设定（资产拆解拼装，见
+                               consistency.build_character_core_prompts）。
+                               非空时，它是每镜「人物角色核心提示词：」行的唯一事实来源。
+                               为空（无资产/资产拆解失败）时模板规则退化为「从原文提炼」。
+
         Returns:
-            全局风格首行 + 逐镜块（标题时长 / 氛围段 / 分秒画面 / 对白 /
-            摄影与视觉要求 / 衔接桥接标注）的完整文本
+            全局风格首行 + 逐镜块（标题时长 / 人物角色核心提示词 / 氛围段 / 分秒画面 /
+            对白 / 摄影与视觉要求 / 衔接桥接标注）的完整文本
         """
         combined = "\n\n---\n\n".join(text_chunks)
         estimated = self._estimate_tokens(combined)
@@ -380,6 +389,17 @@ class LLMService:
             f"先提炼核心剧情线，再围绕主线决定镜头数量，"
             f"严格按照模板输出：\n\n{combined}"
         )
+
+        if character_prompts.strip():
+            user_message += (
+                "\n\n【角色设定（来自资产拆解）】\n"
+                "以下角色及其着装状态，是每镜「人物角色核心提示词：」行的唯一事实来源：\n"
+                "@ 后的名字必须与下方完全一致（不要改写、不要新增下方没有的角色名）；\n"
+                "着装状态有多个时，选择与该镜剧情场景匹配的那一个（如进入实验舱的镜头选"
+                "「实验状态」，日常场景选「日常」），不得自行编造新的着装；\n"
+                "分秒画面行里的服装描写必须与本镜该行选定的着装状态一致。\n\n"
+                f"{character_prompts}"
+            )
 
         return await self._call_llm(
             DIRECTOR_STORYBOARD_SKILL,

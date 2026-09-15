@@ -85,4 +85,8 @@ class Storyboard(Base):
     raw_script: Mapped[str | None] = mapped_column(
         Text, nullable=True, comment="导演脚本原文块（结果页渲染与编辑的事实来源）"
     )
+    character_core_prompt: Mapped[str | None] = mapped_column(
+        Text, nullable=True,
+        comment="每镜人物角色核心提示词（@角色名+着装状态，块内标题行之后）",
+    )
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)

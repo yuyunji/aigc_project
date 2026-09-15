@@ -53,6 +53,7 @@
               :loading="storyboardsLoading"
               :taskId="selectedTaskId"
               :mediaAssets="mediaAssets"
+              :assets="assets"
               :globalPrefix="globalPrefix"
               @generate-video="onGenerateVideo"
               @retry="onRetryScene"

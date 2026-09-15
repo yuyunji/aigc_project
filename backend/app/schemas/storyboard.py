@@ -39,6 +39,7 @@ class StoryboardResponse(BaseModel):
     transition: str | None = None
     dialogue_text: str | None = None
     raw_script: str | None = None
+    character_core_prompt: str | None = None
     created_at: datetime
 
     class Config:
