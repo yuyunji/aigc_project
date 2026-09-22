@@ -193,9 +193,11 @@ sequenceDiagram
 # 1. 克隆项目
 git clone <your-repo-url> && cd aigc_project
 
-# 2. 配置 API Key
-cp backend/.env.example backend/.env
-# 编辑 backend/.env，填入 ANTHROPIC_API_KEY
+# 2. 配置 API Key（二选一）
+#    a) 在项目根目录建 .env，写入 ANTHROPIC_API_KEY=sk-ant-xxxx
+#    b) 或在第 3 步用环境变量传入
+#    注意：compose 只读项目根目录的 .env 和当前 shell 环境，
+#    backend/.env 是给"方式二：本地开发"用的，Docker 路径下不会生效。
 
 # 3. 一行启动
 ANTHROPIC_API_KEY=sk-ant-xxxx docker compose up -d
@@ -215,8 +217,15 @@ open http://localhost:8000
 # ── 数据库（首次） ──
 # 建应用角色与库，需与 backend/.env 的 DATABASE_URL 一致
 psql -U postgres -c "CREATE ROLE aigc LOGIN PASSWORD 'aigc_pass';"
-psql -U postgres -c "CREATE DATABASE aigc_workbench OWNER aigc ENCODING 'UTF8';"
+# 用 TEMPLATE template0：template1 非 UTF8 的 cluster（Windows 上按系统 locale 初始化很常见）
+# 会在不带它时报 "new encoding (UTF8) is incompatible with ... template database"
+psql -U postgres -c "CREATE DATABASE aigc_workbench OWNER aigc ENCODING 'UTF8' TEMPLATE template0;"
 # 表结构由后端启动时的 SQLAlchemy create_all 自动建立，无需手工建表
+#
+# 从 MySQL 版本升级上来的：backend/.env 里若还留着 mysql+pymysql:// 的连接串，
+# 后端会在 import 期报 "ModuleNotFoundError: No module named 'pymysql'"
+# （pymysql 已从依赖移除，而报错不会指向 .env，容易误判成依赖没装全），
+# 把 DATABASE_URL 换成上面的 PG 串即可。
 
 # ── 后端 ──
 cd backend

@@ -18,7 +18,9 @@ services:
       - LLM_CALL_TIMEOUT=${LLM_CALL_TIMEOUT:-120}
       - TASK_TOTAL_TIMEOUT=${TASK_TOTAL_TIMEOUT:-600}
       - MAX_INPUT_CHARS=${MAX_INPUT_CHARS:-200000}
-      - DATABASE_URL=${DATABASE_URL:-postgresql+psycopg://aigc:aigc_pass@postgres:5432/aigc_workbench}
+      # 与下面 postgres 服务的 POSTGRES_* 同源，改密码/库名只需改一处；
+      # 若要整体接管，直接设 DATABASE_URL 覆盖即可。
+      - DATABASE_URL=${DATABASE_URL:-postgresql+psycopg://${POSTGRES_USER:-aigc}:${POSTGRES_PASSWORD:-aigc_pass}@postgres:5432/${POSTGRES_DB:-aigc_workbench}}
       - OSS_ACCESS_KEY_ID=${OSS_ACCESS_KEY_ID:-}
       - OSS_ACCESS_KEY_SECRET=${OSS_ACCESS_KEY_SECRET:-}
       - OSS_ENDPOINT=${OSS_ENDPOINT:-}
@@ -55,7 +57,9 @@ services:
       # 挂旧路径 /var/lib/postgresql/data 会因目录不存在直接启动失败。
       - postgres_data:/var/lib/postgresql
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      # 显式走 TCP：首次 initdb 期间 entrypoint 会起一个只监听 unix socket 的临时 server，
+      # 不带 -h 时 pg_isready 会误判为就绪，导致 app 抢跑后崩一次。
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
       interval: 10s
       timeout: 5s
       retries: 10
