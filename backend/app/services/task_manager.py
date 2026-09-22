@@ -53,6 +53,37 @@ FRIENDLY_ERRORS = {
     TaskTimeoutError: "任务处理超时，请尝试缩短输入文本后重试",
 }
 
+# 分镜导演图风格（前端下拉框的 value → 英文风格描述）
+DIRECTOR_STYLE_EN = {
+    "guoman3d": (
+        "Chinese donghua 3D animation style: stylized non-photorealistic 3D characters, "
+        "exaggerated stylized facial features, smooth toon-shaded skin, sculpted stylized hair, "
+        "rendered like a high-end 3D animated series"
+    ),
+    "riman2d": "Japanese 2D anime look, flat cel-shading, clean ink lineart",
+    "zhenren": "Cinematic live-action film still, real actors, natural lighting",
+}
+
+# 风格锁定语：任务自带的全局风格前缀（如「赛璐璐漫剧风格…电影质感」）在翻译后会与上面的
+# 风格前缀争夺主导权，实测会让「国漫3D」出成写实片。故在 prompt 末尾再收一次口。
+DIRECTOR_STYLE_LOCK = {
+    "guoman3d": (
+        "Render as a stylized 3D animated frame: obviously computer-animated, "
+        "non-photorealistic stylized faces, not a photograph, not live action, not 2D anime"
+    ),
+    "riman2d": "Final render must be 2D anime: not live action, not photorealistic, not 3D CGI",
+    "zhenren": "Final render must be photorealistic live action: not animation, not illustration",
+}
+
+# 6 宫格版式约束：必须拼在中文翻译**之后**，否则会被 prompt_builder 当成场景描述改写掉
+DIRECTOR_BOARD_CONSTRAINT = (
+    "Storyboard sheet: a six-panel storyboard board arranged in a 2x3 grid, "
+    "six sequential frames showing the continuous progression of this shot, "
+    "each panel clearly separated by thin white borders, "
+    "consistent characters and camera style across all panels, "
+    "numbered panels from top-left to bottom-right"
+)
+
 # 是否自动执行媒体链路（由 settings.auto_media_pipeline 控制）
 
 
@@ -1445,6 +1476,85 @@ class TaskManager:
             self._update_media_asset(asset.id, "failed", error=err)
             return {"status": "failed", "error": err}
 
+    async def generate_director_image(
+        self, task_id: str, scene: dict, style: str = "guoman3d"
+    ) -> dict:
+        """为单个分镜生成 6 宫格分镜导演图（GPT-Image-2）"""
+        from app.services.gpt_image_service import gpt_image_service
+        from app.services.prompt_builder import prompt_builder
+
+        scene_num = scene["scene_number"]
+        if style not in DIRECTOR_STYLE_EN:
+            style = "guoman3d"
+        style_en = DIRECTOR_STYLE_EN[style]
+
+        self._cleanup_asset(task_id, scene_num, "director_image")
+
+        # 先落 running 记录再翻译：翻译是 LLM 调用（实测 40-90s），放在后面会让这段窗口里
+        # 刷新页面看不到「生成中」、也能重复点出两次并发生成
+        asset = self._create_media_asset(task_id, "director_image", scene_num, None)
+
+        # 中文输入：全局前缀 + 角色核心提示词 + 模板 image_prompt
+        # （不拼台词——导演图是画面拆解，台词对拆分镜头没有帮助）
+        parts = []
+        global_prefix = TaskManager._get_global_prefix(task_id)
+        if global_prefix:
+            parts.append(global_prefix[:400])
+        elif settings.image_style:
+            parts.append(f"Style: {settings.image_style}")
+        char_core = (scene.get("character_core_prompt") or "").strip()
+        if char_core:
+            parts.append(f"人物角色核心提示词：{char_core[:300]}")
+        image_prompt = (scene.get("image_prompt") or "").strip()
+        if image_prompt:
+            parts.append(image_prompt[:800])
+        else:
+            fallback = (
+                scene.get("visual_description") or scene.get("description") or ""
+            ).strip()
+            if fallback:
+                parts.append(fallback[:800])
+        if len(parts) <= 1:
+            # 兜底：至少给出场景/时间，避免把空串丢给翻译
+            title = (scene.get("scene_title") or "").strip()
+            location = (scene.get("location") or "").strip()
+            time_of_day = (scene.get("time_of_day") or "").strip()
+            parts.append("".join([title, location, time_of_day]) or "影视分镜场景")
+
+        try:
+            translated = await prompt_builder.build_image_prompt("。".join(parts))
+
+            # 版式约束与风格锁定语都拼在翻译之后：进翻译会被 prompt_builder 改写成场景描述
+            prompt = (
+                f"{style_en}. {translated}. "
+                f"{DIRECTOR_BOARD_CONSTRAINT}. {DIRECTOR_STYLE_LOCK[style]}"
+            )[:3000]
+            self._update_media_asset(asset.id, "running", prompt=prompt)
+
+            path, image_url = await asyncio.wait_for(
+                gpt_image_service.generate_asset_image(
+                    task_id, f"scene_{scene_num:02d}_director", prompt
+                ),
+                timeout=660,
+            )
+            # 不带轮次前缀：文件名确定性且不入归档轮，重新生成时同名覆盖即可
+            oss_key = await self._upload_to_oss(path)
+            self._update_media_asset(
+                asset.id,
+                "success",
+                file_path=path,
+                file_url=image_url,
+                oss_key=oss_key,
+            )
+            return {"status": "success", "file_path": path, "asset_id": asset.id}
+        except asyncio.TimeoutError:
+            self._update_media_asset(asset.id, "failed", error="导演图生成超时（660s）")
+            return {"status": "failed", "error": "导演图生成超时，请重试"}
+        except Exception as e:
+            err = str(e)[:500]
+            self._update_media_asset(asset.id, "failed", error=err)
+            return {"status": "failed", "error": err}
+
     # ------------------------------------------------------------------
     # 媒体链路辅助方法
     # ------------------------------------------------------------------
@@ -1791,6 +1901,7 @@ class TaskManager:
         file_url: str | None = None,
         oss_key: str | None = None,
         error: str | None = None,
+        prompt: str | None = None,
     ) -> None:
         """更新 media_asset 状态"""
         db = SessionLocal()
@@ -1806,6 +1917,8 @@ class TaskManager:
                     asset.oss_key = oss_key
                 if error:
                     asset.error_message = error
+                if prompt:
+                    asset.prompt = prompt
                 db.commit()
 
                 url = None

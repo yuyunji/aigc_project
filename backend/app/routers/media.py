@@ -5,6 +5,7 @@ GET  /api/media/{task_id}/videos      — 视频片段列表
 GET  /api/media/{task_id}/audio       — 配音列表
 GET  /api/media/{task_id}/composite   — 合成视频
 GET  /api/media/{task_id}/archive     — 历史轮次归档（重新生成保留的上一轮产物）
+GET  /api/media/{task_id}/director-images — 分镜导演图（6 宫格）列表
 """
 import asyncio
 import logging
@@ -18,6 +19,7 @@ from app.models.storyboard import Storyboard
 from app.models.media import MediaAsset
 from app.models.media_archive import MediaArchive
 from app.schemas.media import (
+    DirectorImageRequest,
     MediaAssetResponse,
     MediaAssetListResponse,
     MediaArchiveItemResponse,
@@ -39,6 +41,26 @@ async def generate_scene_video(task_id: str, scene_number: int):
     scene = _get_scene_or_404(task_id, scene_number)
     asyncio.create_task(_run_scene_video(task_id, scene))
     return {"status": "started", "task_id": task_id, "scene_number": scene_number}
+
+
+@router.post("/{task_id}/scene/{scene_number}/director-image")
+async def generate_director_image(
+    task_id: str, scene_number: int, req: DirectorImageRequest
+):
+    """
+    为单个分镜生成 6 宫格分镜导演图 (GPT-Image-2)。
+
+    style 必须走 body：本模块的 video 接口用的是 query param，
+    但函数签名里没有声明，FastAPI 会静默丢弃 —— 不要重蹈覆辙。
+    """
+    scene = _get_scene_or_404(task_id, scene_number)
+    asyncio.create_task(_run_director_image(task_id, scene, req.style))
+    return {
+        "status": "started",
+        "task_id": task_id,
+        "scene_number": scene_number,
+        "style": req.style,
+    }
 
 
 @router.post("/{task_id}/scene/{scene_number}/retry")
@@ -108,6 +130,14 @@ async def _run_scene_video(task_id: str, scene: dict):
         await task_manager.generate_scene_video(task_id, scene)
     except Exception as e:
         logger.exception(f"[{task_id}] scene {scene['scene_number']} video: {e}")
+
+
+async def _run_director_image(task_id: str, scene: dict, style: str):
+    """后台执行单个分镜导演图生成"""
+    try:
+        await task_manager.generate_director_image(task_id, scene, style)
+    except Exception as e:
+        logger.exception(f"[{task_id}] scene {scene['scene_number']} director: {e}")
 
 
 def _get_task_or_404(task_id: str, db: Session) -> Task:
@@ -281,6 +311,25 @@ def get_videos(task_id: str, db: Session = Depends(get_db)):
     assets = (
         db.query(MediaAsset)
         .filter(MediaAsset.task_id == task_id, MediaAsset.asset_type == "video")
+        .order_by(MediaAsset.scene_number.asc())
+        .all()
+    )
+    return MediaAssetListResponse(
+        total=len(assets),
+        assets=[MediaAssetResponse.model_validate(a) for a in assets],
+    )
+
+
+@router.get("/{task_id}/director-images", response_model=MediaAssetListResponse)
+def get_director_images(task_id: str, db: Session = Depends(get_db)):
+    """分镜导演图（6 宫格）列表 —— 刷新页面后恢复展示用"""
+    _get_task_or_404(task_id, db)
+    assets = (
+        db.query(MediaAsset)
+        .filter(
+            MediaAsset.task_id == task_id,
+            MediaAsset.asset_type == "director_image",
+        )
         .order_by(MediaAsset.scene_number.asc())
         .all()
     )

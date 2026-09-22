@@ -38,3 +38,13 @@ export function generateSceneVideo(taskId, sceneNumber, provider) {
 export function retryScene(taskId, sceneNumber) {
   return apiClient.post(`/api/media/${taskId}/scene/${sceneNumber}/retry`);
 }
+
+/** 为单个分镜生成 6 宫格分镜导演图（style: guoman3d / riman2d / zhenren） */
+export function generateDirectorImage(taskId, sceneNumber, style) {
+  return apiClient.post(`/api/media/${taskId}/scene/${sceneNumber}/director-image`, { style });
+}
+
+/** 分镜导演图列表 */
+export function getDirectorImages(taskId) {
+  return apiClient.get(`/api/media/${taskId}/director-images`);
+}

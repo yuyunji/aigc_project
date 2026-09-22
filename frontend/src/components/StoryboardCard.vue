@@ -113,13 +113,47 @@
               size="small" type="warning" plain
               @click="$emit('retry', scene.scene_number)"
             >🔄 重试</el-button>
+
+            <span class="actions-sep"></span>
+
+            <el-select
+              :model-value="directorStyle(scene.scene_number)"
+              size="small"
+              class="director-select"
+              @change="onDirectorStyleChange(scene.scene_number, $event)"
+            >
+              <el-option
+                v-for="s in DIRECTOR_STYLES" :key="s.value" :label="s.label" :value="s.value"
+              />
+            </el-select>
+            <el-button
+              size="small"
+              :type="directorState(scene.scene_number) === 'success' ? 'warning' : 'primary'"
+              plain
+              :loading="directorState(scene.scene_number) === 'running'"
+              :disabled="directorState(scene.scene_number) === 'running'"
+              @click="$emit('generate-director', scene.scene_number, directorStyle(scene.scene_number))"
+            >
+              {{ directorState(scene.scene_number) === 'success' ? '🔄 重新生成导演镜头' : '🎬 生成导演镜头' }}
+            </el-button>
           </div>
 
           <div class="status-row" v-if="getSceneMedia(scene.scene_number).length">
             <el-tag
               v-for="m in getSceneMedia(scene.scene_number)"
               :key="m.id" size="small" :type="statusType(m)" effect="plain" round class="status-tag"
-            >🎥 {{ statusLabel(m) }}</el-tag>
+            >{{ typeIcon(m) }} {{ statusLabel(m) }}</el-tag>
+          </div>
+
+          <div v-if="directorByScene[scene.scene_number]" class="director-preview">
+            <img
+              class="director-thumb"
+              :src="directorUrl(directorByScene[scene.scene_number])"
+              alt="6 宫格分镜导演图"
+              title="点击查看大图"
+              @click="openDirectorImage(directorByScene[scene.scene_number])"
+            />
+            <span class="director-hint">6 宫格分镜导演图 · 点击查看大图（可滚轮缩放）</span>
           </div>
 
           <div v-if="getSceneMedia(scene.scene_number).some(m => m.status === 'failed' && m.error_message)" class="error-row">
@@ -131,6 +165,19 @@
         </div>
       </el-card>
     </template>
+
+    <!--
+      大图查看器：全屏浮层，滚轮缩放 / 旋转 / 拖拽。
+      不用 window.open —— 那是把原图交给浏览器，要么新开标签要么直接下载，
+      在应用里看不出「查看」的效果。teleported 是为了躲开 el-card 的 overflow:hidden。
+    -->
+    <el-image-viewer
+      v-if="viewerUrl"
+      :url-list="[viewerUrl]"
+      :z-index="3000"
+      teleported
+      @close="viewerUrl = ''"
+    />
   </div>
 </template>
 
@@ -138,6 +185,15 @@
 import { computed, ref, reactive } from "vue";
 import { ElMessage } from "element-plus";
 import { updateStoryboard, updateGlobalPrefix } from "../api/task";
+import { getMediaUrl } from "../utils/media";
+
+/** 分镜导演图风格选项（value 与后端 DIRECTOR_STYLE_EN 的 key 一一对应） */
+const DIRECTOR_STYLES = [
+  { value: "guoman3d", label: "国漫3D" },
+  { value: "riman2d", label: "日漫2D" },
+  { value: "zhenren", label: "真人写实" },
+];
+const DIRECTOR_STYLE_KEY = "aigc_director_style";
 
 const props = defineProps({
   scenes: { type: Array, default: () => [] },
@@ -150,10 +206,31 @@ const props = defineProps({
   globalPrefix: { type: String, default: "" },
 });
 
-const emit = defineEmits(["generate-video", "retry", "saved"]);
+const emit = defineEmits(["generate-video", "generate-director", "retry", "saved"]);
 
 // 编辑态：场景号 -> 草稿文本（键存在即表示该卡处于编辑态）
 const drafts = reactive({});
+
+// 导演图风格：场景号 -> 当前选择（懒初始化读 localStorage）
+const directorStyles = reactive({});
+
+function loadDirectorStyle() {
+  const saved = localStorage.getItem(DIRECTOR_STYLE_KEY);
+  // 校验枚举：存了非法值会让 el-select 显示空白
+  return DIRECTOR_STYLES.some((s) => s.value === saved) ? saved : "guoman3d";
+}
+
+function directorStyle(sceneNumber) {
+  if (directorStyles[sceneNumber] === undefined) {
+    directorStyles[sceneNumber] = loadDirectorStyle();
+  }
+  return directorStyles[sceneNumber];
+}
+
+function onDirectorStyleChange(sceneNumber, value) {
+  directorStyles[sceneNumber] = value;
+  localStorage.setItem(DIRECTOR_STYLE_KEY, value);
+}
 const saving = ref(null);        // 正在保存的场景号；"global" 表示全局风格卡
 const globalEditing = ref(false);
 const globalDraft = ref("");
@@ -276,21 +353,49 @@ async function save(scene) {
   finally { saving.value = null; }
 }
 
-// ── 视频状态 ──
+// ── 媒体状态 ──
 
 function getSceneMedia(sceneNumber) {
   return (props.mediaAssets || []).filter((m) => m.scene_number === sceneNumber);
 }
 
 function videoState(sceneNumber) { return mediaState(sceneNumber, "video"); }
+function directorState(sceneNumber) { return mediaState(sceneNumber, "director_image"); }
 
 function mediaState(sceneNumber, type) {
   const assets = getSceneMedia(sceneNumber);
   if (type === "any" && assets.some((a) => a.status === "failed")) return "failed";
-  const matching = assets.filter((a) => a.asset_type === "video");
+  const matching = assets.filter((a) => a.asset_type === type);
   if (matching.some((a) => a.status === "success")) return "success";
   if (matching.some((a) => a.status === "running")) return "running";
   return "idle";
+}
+
+/** 场景号 -> 该镜成功的导演图（用于缩略图展示，一次遍历避免模板里反复 filter） */
+const directorByScene = computed(() => {
+  const map = {};
+  for (const m of props.mediaAssets || []) {
+    if (m.asset_type === "director_image" && m.status === "success") {
+      map[m.scene_number] = m;
+    }
+  }
+  return map;
+});
+
+function directorUrl(m) {
+  const base = getMediaUrl(m);
+  if (!base) return "";
+  // OSS 签名 URL 每次生成都不同（无缓存问题），且额外拼 query 可能破坏签名；
+  // 本地 /media 路径恒定，必须拼 id 破缓存，否则重新生成后浏览器仍显示旧图
+  return m.url ? base : `${base}?v=${m.id}`;
+}
+
+// 当前查看大图的 URL；非空即打开 el-image-viewer 浮层
+const viewerUrl = ref("");
+
+function openDirectorImage(m) {
+  const url = directorUrl(m);
+  if (url) viewerUrl.value = url;
 }
 
 function statusType(m) {
@@ -298,6 +403,9 @@ function statusType(m) {
 }
 function statusLabel(m) {
   return m.status === "success" ? "已完成" : m.status === "failed" ? "失败" : "生成中";
+}
+function typeIcon(m) {
+  return m.asset_type === "director_image" ? "📋" : "🎥";
 }
 </script>
 
@@ -411,9 +519,38 @@ function statusLabel(m) {
 }
 
 .sb-actions { margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--color-border-light); }
-.actions-row { display: flex; gap: 8px; flex-wrap: wrap; }
+.actions-row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+.actions-sep {
+  width: 1px;
+  align-self: stretch;
+  min-height: 24px;
+  background: var(--color-border-light);
+  margin: 0 2px;
+}
+.director-select { width: 108px; }
 .status-row { margin-top: 8px; display: flex; gap: 6px; flex-wrap: wrap; }
 .status-tag { font-size: 11px; }
+
+/* 6 宫格导演图预览 */
+.director-preview {
+  margin-top: 10px;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+}
+.director-thumb {
+  display: block;
+  width: 100%;
+  /* 6 宫格每格才 1/6 宽，缩略图太小看不出内容，给宽一些 */
+  max-width: 520px;
+  border: 1px solid var(--color-border-light);
+  border-radius: 8px;
+  cursor: zoom-in;
+  transition: box-shadow 0.2s;
+  &:hover { box-shadow: 0 4px 16px rgba(0, 0, 0, 0.15); }
+}
+.director-hint { font-size: 11px; color: var(--color-text-tertiary); }
 .error-row { margin-top: 8px; }
 .error-alert {
   margin-top: 4px;

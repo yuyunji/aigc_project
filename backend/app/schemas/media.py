@@ -2,6 +2,7 @@
 媒体资源 Pydantic Schema
 """
 from datetime import datetime
+from typing import Literal
 from pydantic import BaseModel, Field
 
 
@@ -22,6 +23,13 @@ class GenerateTTSRequest(BaseModel):
 class CompositeRequest(BaseModel):
     """视频合成请求"""
     task_id: str = Field(..., description="任务 ID")
+
+
+class DirectorImageRequest(BaseModel):
+    """分镜导演图（6 宫格）请求"""
+    style: Literal["guoman3d", "riman2d", "zhenren"] = Field(
+        "guoman3d", description="画面风格：guoman3d 国漫3D / riman2d 日漫2D / zhenren 真人写实"
+    )
 
 
 # ── 响应 ──

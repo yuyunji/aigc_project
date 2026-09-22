@@ -56,6 +56,7 @@
               :assets="assets"
               :globalPrefix="globalPrefix"
               @generate-video="onGenerateVideo"
+              @generate-director="onGenerateDirector"
               @retry="onRetryScene"
               @saved="onStoryboardSaved"
             />
@@ -89,7 +90,7 @@ import { ref, computed, onMounted, onUnmounted } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { ElMessage, ElMessageBox } from "element-plus";
 import { getTaskList, getTask, getStoryboards } from "../api/task";
-import { getVideos, generateSceneVideo, retryScene } from "../api/media";
+import { getVideos, generateSceneVideo, retryScene, generateDirectorImage, getDirectorImages } from "../api/media";
 import { extractAssets, getAssets, createAsset, updateAsset, deleteAsset, generateAssetImage, uploadAssetImage } from "../api/asset";
 import StoryboardCard from "../components/StoryboardCard.vue";
 import AssetBreakdownTab from "../components/AssetBreakdownTab.vue";
@@ -148,7 +149,15 @@ async function onTaskSelect(taskId) {
 async function loadResults(taskId) {
   await Promise.allSettled([
     (async () => { storyboardsLoading.value = true; try { const r = await getStoryboards(taskId); storyboards.value = r.data || []; } catch(e){} finally { storyboardsLoading.value = false; } })(),
-    (async () => { try { const v = await getVideos(taskId); mediaAssets.value = v.data.assets || []; } catch(e){} })(),
+    (async () => {
+      // 视频与导演图同属 mediaAssets（同一条 SSE 通道更新），一并拉取后再整体覆盖
+      const [v, d] = await Promise.allSettled([getVideos(taskId), getDirectorImages(taskId)]);
+      const assets = [];
+      for (const r of [v, d]) {
+        if (r.status === "fulfilled") assets.push(...(r.value.data.assets || []));
+      }
+      mediaAssets.value = assets;
+    })(),
     (async () => { try { const t = await getTask(taskId); globalPrefix.value = t.data.global_prefix || ""; } catch(e){} })(),
     (async () => { await loadAssets(taskId); })(),
   ]);
@@ -173,7 +182,7 @@ function setupTaskEvents(taskId) {
       };
       // 同分镜同类型只保留最新一条：真实事件到达时清掉本地占位和旧的 success/failed 记录，
       // 否则重新生成时旧 success 残留会导致按钮不 loading、视频不反显
-      if (data.scene_number != null && data.asset_type === "video") {
+      if (data.scene_number != null && (data.asset_type === "video" || data.asset_type === "director_image")) {
         mediaAssets.value = mediaAssets.value.filter(
           m => !(m.asset_type === data.asset_type && m.scene_number === data.scene_number && m.id !== data.asset_id)
         );
@@ -234,6 +243,11 @@ async function onGenerateVideo(sn) {
   markSceneRunning(sn, "video");
   try { await generateSceneVideo(selectedTaskId.value, sn, provider); ElMessage.success(`分镜${sn} 视频生成已启动`); }
   catch(e) { markSceneIdle(sn, "video"); }
+}
+async function onGenerateDirector(sn, style) {
+  markSceneRunning(sn, "director_image");
+  try { await generateDirectorImage(selectedTaskId.value, sn, style); ElMessage.success(`分镜${sn} 导演图生成已启动`); }
+  catch(e) { markSceneIdle(sn, "director_image"); }
 }
 async function onRetryScene(sn) { try { await retryScene(selectedTaskId.value, sn); ElMessage.success(`分镜${sn} 已重置`); await loadResults(selectedTaskId.value); } catch(e){} }
 

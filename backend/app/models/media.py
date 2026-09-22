@@ -17,6 +17,7 @@ class MediaAsset(Base):
     - audio:      角色配音（Volcengine TTS）
     - composite:  最终合成视频（FFmpeg 拼接）
     - flowchart:  导演流程图（GPT-Image-2 生成）
+    - director_image: 分镜导演图（6 宫格分镜板，GPT-Image-2 生成）
     """
     __tablename__ = "media_assets"
 
@@ -27,7 +28,9 @@ class MediaAsset(Base):
         String(36), ForeignKey("tasks.id"), nullable=False, comment="关联任务"
     )
     asset_type: Mapped[str] = mapped_column(
-        String(20), nullable=False, comment="image / video / audio / composite / flowchart"
+        String(20),
+        nullable=False,
+        comment="image / video / audio / composite / flowchart / director_image",
     )
 
     # 关联分镜（image/video 类型使用）
