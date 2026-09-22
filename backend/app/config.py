@@ -26,8 +26,8 @@ class Settings(BaseSettings):
     host: str = "127.0.0.1"
     port: int = 8000
 
-    # 数据库（MySQL）
-    database_url: str = "mysql+pymysql://aigc:aigc_pass@127.0.0.1:3306/aigc_workbench?charset=utf8mb4"
+    # 数据库（PostgreSQL）
+    database_url: str = "postgresql+psycopg://aigc:aigc_pass@127.0.0.1:5432/aigc_workbench"
 
     # 文本处理
     max_chunk_size: int = 8000

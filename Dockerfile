@@ -50,7 +50,7 @@ RUN mkdir -p uploads
 ENV HOST=0.0.0.0
 ENV PORT=8000
 ENV ANTHROPIC_API_KEY=""
-ENV DATABASE_URL=mysql+pymysql://aigc:aigc_pass@mysql:3306/aigc_workbench?charset=utf8mb4
+ENV DATABASE_URL=postgresql+psycopg://aigc:aigc_pass@postgres:5432/aigc_workbench
 
 EXPOSE 8000
 

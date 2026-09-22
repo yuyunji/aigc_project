@@ -14,74 +14,60 @@
 import os
 import sys
 
-import pymysql
+import psycopg
+from psycopg import sql
 
 # 允许以 `python migrations/xxx.py` 直接运行
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from app.config import settings  # noqa: E402
 
-# (表名, 列名, 建列语句, 注释)
+# (表名, 列名, 列注释)
 COLUMNS = [
-    (
-        "storyboards",
-        "raw_script",
-        "ADD COLUMN raw_script TEXT NULL COMMENT '导演脚本原文块（编辑事实来源）'",
-    ),
-    (
-        "tasks",
-        "opening_section",
-        "ADD COLUMN opening_section TEXT NULL COMMENT '片头定调段原文（作品信息卡+开场定调）'",
-    ),
+    ("storyboards", "raw_script", "导演脚本原文块（编辑事实来源）"),
+    ("tasks", "opening_section", "片头定调段原文（作品信息卡+开场定调）"),
 ]
 
 
-def parse_dsn(url: str) -> dict:
-    """mysql+pymysql://user:pass@host:port/db?charset=... → pymysql 连接参数"""
-    body = url.split("://", 1)[1]
-    creds, rest = body.split("@", 1)
-    user, password = creds.split(":", 1)
-    hostport, dbname = rest.split("/", 1)
-    dbname = dbname.split("?", 1)[0]
-    if ":" in hostport:
-        host, port = hostport.split(":", 1)
-    else:
-        host, port = hostport, "3306"
-    return {
-        "host": host,
-        "port": int(port),
-        "user": user,
-        "password": password,
-        "database": dbname,
-        "charset": "utf8mb4",
-    }
+def dsn(url: str) -> str:
+    """postgresql+psycopg://... → psycopg 可直连的 postgresql://..."""
+    return url.replace("+psycopg", "", 1)
 
 
 def column_exists(cur, table: str, column: str) -> bool:
     cur.execute(
         "SELECT COUNT(*) FROM information_schema.COLUMNS "
-        "WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = %s AND COLUMN_NAME = %s",
+        "WHERE table_schema = current_schema() AND table_name = %s AND column_name = %s",
         (table, column),
     )
     return cur.fetchone()[0] > 0
 
 
 def main() -> int:
-    conn = pymysql.connect(**parse_dsn(settings.database_url))
-    try:
+    with psycopg.connect(dsn(settings.database_url)) as conn:
         with conn.cursor() as cur:
             changed = 0
-            for table, column, ddl in COLUMNS:
+            for table, column, comment in COLUMNS:
                 if column_exists(cur, table, column):
                     print(f"  [skip] {table}.{column} 已存在")
                     continue
-                cur.execute(f"ALTER TABLE {table} {ddl}")
+                cur.execute(
+                    sql.SQL("ALTER TABLE {} ADD COLUMN {} TEXT NULL").format(
+                        sql.Identifier(table), sql.Identifier(column)
+                    )
+                )
+                # COMMENT ON 是 utility 语句，不接受绑定参数，只能拼字面量
+                cur.execute(
+                    sql.SQL("COMMENT ON COLUMN {}.{} IS {}").format(
+                        sql.Identifier(table),
+                        sql.Identifier(column),
+                        sql.Literal(comment),
+                    )
+                )
                 print(f"  [ok]   {table}.{column} 已创建")
                 changed += 1
         conn.commit()
         print(f"迁移完成：新增 {changed} 列")
-    finally:
-        conn.close()
     return 0
 
 

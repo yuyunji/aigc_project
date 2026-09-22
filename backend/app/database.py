@@ -1,6 +1,6 @@
 """
 数据库连接 & 建表
-使用 SQLAlchemy ORM，仅支持 MySQL（通过 DATABASE_URL 配置）。
+使用 SQLAlchemy ORM，仅支持 PostgreSQL（通过 DATABASE_URL 配置）。
 """
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker, DeclarativeBase
@@ -9,8 +9,7 @@ from app.config import settings
 
 engine = create_engine(
     settings.database_url,
-    pool_pre_ping=True,   # MySQL 断连自动重连
-    pool_recycle=3600,
+    pool_pre_ping=True,   # 断连自动重连（PG 重启 / 空闲连接被服务端回收）
     echo=False,
 )
 

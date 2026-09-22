@@ -59,7 +59,7 @@
 |------|------|------|
 | 后端框架 | Python FastAPI 0.115 | 异步 REST API |
 | ORM | SQLAlchemy 2.0 | 同步引擎 + async to_thread |
-| 数据库 | MySQL | 通过 DATABASE_URL 配置 |
+| 数据库 | PostgreSQL 18 | 通过 DATABASE_URL 配置 |
 | AI 能力 | Anthropic Claude API | Sonnet 5 模型 |
 | 前端框架 | Vue 3.5 | Composition API + script setup |
 | UI 组件库 | Element Plus 2.9 | Bento Grid + AI Purple 主题 |
@@ -95,7 +95,7 @@ graph TD
         L[LLMService<br/>Claude API 封装<br/>重试 + 超时 + Token检查]
     end
 
-    subgraph 数据层["💾 MySQL"]
+    subgraph 数据层["💾 PostgreSQL"]
         M[(Tasks)]
         N[(Outlines)]
         O[(Characters)]
@@ -138,7 +138,7 @@ sequenceDiagram
     participant Q as 任务队列
     participant TM as TaskManager
     participant LLM as Claude API
-    participant DB as MySQL
+    participant DB as PostgreSQL
 
     U->>FE: 粘贴文本 / 上传文件
     FE->>API: POST /api/tasks
@@ -184,6 +184,7 @@ sequenceDiagram
 
 - Python 3.11+
 - Node.js 20+
+- PostgreSQL 18+（本地开发需自行安装；Docker 方式由 compose 提供）
 - Claude API Key（[console.anthropic.com](https://console.anthropic.com) 获取）
 
 ### 方式一：Docker Compose（推荐）
@@ -205,9 +206,18 @@ open http://localhost:8000
 
 > Docker 镜像内同时包含前端（Vite 构建产物由 FastAPI 托管）和后端，无需单独启动前端。
 
+> 容器内的 PostgreSQL 默认映射到宿主机 **5433**（`POSTGRES_HOST_PORT` 可覆盖），
+> 避免与宿主机上常驻的原生 PostgreSQL 抢占 5432。app 服务走 compose 内网，不受影响。
+
 ### 方式二：本地开发模式
 
 ```bash
+# ── 数据库（首次） ──
+# 建应用角色与库，需与 backend/.env 的 DATABASE_URL 一致
+psql -U postgres -c "CREATE ROLE aigc LOGIN PASSWORD 'aigc_pass';"
+psql -U postgres -c "CREATE DATABASE aigc_workbench OWNER aigc ENCODING 'UTF8';"
+# 表结构由后端启动时的 SQLAlchemy create_all 自动建立，无需手工建表
+
 # ── 后端 ──
 cd backend
 python -m venv venv
@@ -342,7 +352,7 @@ aigc_project/
 │   └── app/
 │       ├── main.py                   # FastAPI 入口 + 生命周期
 │       ├── config.py                 # 配置管理（含LLM/超时参数）
-│       ├── database.py               # MySQL + get_db 依赖
+│       ├── database.py               # PostgreSQL + get_db 依赖
 │       ├── models/                   # ORM 模型
 │       │   ├── task.py
 │       │   ├── outline.py
@@ -406,7 +416,7 @@ aigc_project/
 | `MAX_CHUNK_SIZE` | `8000` | 分片大小（字符） |
 | `MAX_INPUT_CHARS` | `200000` | 最大输入字符数 |
 | `MAX_CHUNKS_FOR_LLM` | `3` | 送入 LLM 的最大分片数 |
-| `DATABASE_URL` | `mysql+pymysql://aigc:aigc_pass@127.0.0.1:3306/aigc_workbench?charset=utf8mb4` | 数据库连接串 |
+| `DATABASE_URL` | `postgresql+psycopg://aigc:aigc_pass@127.0.0.1:5432/aigc_workbench` | 数据库连接串 |
 
 ---
 

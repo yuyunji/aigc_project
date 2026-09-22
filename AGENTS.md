@@ -15,7 +15,7 @@
 
 ## 技术栈
 
-- 后端：Python FastAPI 0.115 + SQLAlchemy 2.0 + MySQL（`backend/`）
+- 后端：Python FastAPI 0.115 + SQLAlchemy 2.0 + PostgreSQL 18（`backend/`）
 - LLM：Anthropic Claude API（注意：应用调用的是 Claude，不是 DSH 的模型）
 - 前端：Vue 3.5 + Element Plus 2.9 + Vite 6（`frontend/`）
 - 任务队列：`asyncio.Queue` 内存队列（重启即丢失，Demo 模拟）
@@ -59,7 +59,8 @@ ANTHROPIC_API_KEY=sk-ant-xxxx docker compose up -d
 ## 配置与密钥
 
 - 密钥与参数在 `backend/.env`（模板 `backend/.env.example`）；`ANTHROPIC_API_KEY` 必填。
-- 数据库为 MySQL（`mysql+pymysql://aigc:aigc_pass@127.0.0.1:3306/aigc_workbench`），连接串在 `backend/.env` 的 `DATABASE_URL`。
+- 数据库为 PostgreSQL（`postgresql+psycopg://aigc:aigc_pass@127.0.0.1:5432/aigc_workbench`），连接串在 `backend/.env` 的 `DATABASE_URL`。
+- 无 Alembic：表结构由 `database.py` 的 `create_all` 按 model 建全表，`backend/migrations/` 下是手工执行的一次性脚本（幂等，会跳过已存在的列）。
 
 ## 需要遵守的约定
 

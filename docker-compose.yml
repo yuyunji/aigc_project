@@ -18,7 +18,7 @@ services:
       - LLM_CALL_TIMEOUT=${LLM_CALL_TIMEOUT:-120}
       - TASK_TOTAL_TIMEOUT=${TASK_TOTAL_TIMEOUT:-600}
       - MAX_INPUT_CHARS=${MAX_INPUT_CHARS:-200000}
-      - DATABASE_URL=${DATABASE_URL:-mysql+pymysql://aigc:aigc_pass@mysql:3306/aigc_workbench?charset=utf8mb4}
+      - DATABASE_URL=${DATABASE_URL:-postgresql+psycopg://aigc:aigc_pass@postgres:5432/aigc_workbench}
       - OSS_ACCESS_KEY_ID=${OSS_ACCESS_KEY_ID:-}
       - OSS_ACCESS_KEY_SECRET=${OSS_ACCESS_KEY_SECRET:-}
       - OSS_ENDPOINT=${OSS_ENDPOINT:-}
@@ -29,7 +29,7 @@ services:
       - ./uploads:/app/uploads
       - ./media:/app/media
     depends_on:
-      mysql:
+      postgres:
         condition: service_healthy
     restart: unless-stopped
     healthcheck:
@@ -38,21 +38,24 @@ services:
       timeout: 10s
       retries: 3
 
-  mysql:
-    image: mysql:8.0
-    container_name: aigc-mysql
+  postgres:
+    image: postgres:18-alpine
+    container_name: aigc-postgres
     restart: unless-stopped
     environment:
-      - MYSQL_ROOT_PASSWORD=${MYSQL_ROOT_PASSWORD:-root_pass}
-      - MYSQL_DATABASE=${MYSQL_DATABASE:-aigc_workbench}
-      - MYSQL_USER=${MYSQL_USER:-aigc}
-      - MYSQL_PASSWORD=${MYSQL_PASSWORD:-aigc_pass}
+      - POSTGRES_DB=${POSTGRES_DB:-aigc_workbench}
+      - POSTGRES_USER=${POSTGRES_USER:-aigc}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-aigc_pass}
     ports:
-      - "3306:3306"
+      # 仅用于从宿主机直连容器内的库做排查；app 服务走 compose 内网 postgres:5432，不依赖这个映射。
+      # 默认映射到 5433：宿主机上常驻的原生 PostgreSQL 已占用 5432，直接映射会 port already allocated。
+      - "${POSTGRES_HOST_PORT:-5433}:5432"
     volumes:
-      - mysql_data:/var/lib/mysql
+      # PG18 起官方镜像的 VOLUME 上移一层，数据实际落在 /var/lib/postgresql/18/docker；
+      # 挂旧路径 /var/lib/postgresql/data 会因目录不存在直接启动失败。
+      - postgres_data:/var/lib/postgresql
     healthcheck:
-      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -uroot -p$${MYSQL_ROOT_PASSWORD} --silent"]
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
       interval: 10s
       timeout: 5s
       retries: 10
@@ -74,4 +77,4 @@ services:
 volumes:
   caddy_data:
   caddy_config:
-  mysql_data:
+  postgres_data:
